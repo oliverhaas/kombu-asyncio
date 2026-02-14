@@ -153,7 +153,10 @@ class Connection:
         """
         if not self.is_connected:
             await self.connect()
-        return await self._transport.create_channel()
+        ch = await self._transport.create_channel()
+        # Back-reference so channel.connection.client works
+        ch.connection = self
+        return ch
 
     async def default_channel(self) -> Channel:
         """Get or create the default channel.
@@ -429,6 +432,11 @@ class Connection:
         return True
 
     # Aliases for backwards compatibility concepts
+    @property
+    def client(self) -> Connection:
+        """Self-reference for old-style channel.connection.client access."""
+        return self
+
     @property
     def connected(self) -> bool:
         """Alias for is_connected."""

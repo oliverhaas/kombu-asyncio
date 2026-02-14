@@ -96,6 +96,9 @@ class Producer:
         priority: int | None = None,
         expiration: float | None = None,
         delivery_mode: int | None = None,
+        declare: list | None = None,
+        retry: bool = False,
+        retry_policy: dict | None = None,
         **kwargs: Any,
     ) -> None:
         """Publish a message.
@@ -110,6 +113,9 @@ class Producer:
             priority: Message priority (0-9).
             expiration: Message TTL in seconds.
             delivery_mode: 1=transient, 2=persistent.
+            declare: List of Exchange/Queue objects to declare before publishing.
+            retry: Whether to retry on failure.
+            retry_policy: Retry policy options.
             **kwargs: Additional properties.
         """
         channel = await self._ensure_channel()
@@ -117,6 +123,15 @@ class Producer:
         # Auto declare
         if self.auto_declare and not self._declared:
             await self.declare()
+
+        # Declare any extra exchanges/queues
+        if declare:
+            for entity in declare:
+                if hasattr(entity, "declare"):
+                    try:
+                        await entity.declare(channel)
+                    except Exception:
+                        pass  # Best effort
 
         # Resolve defaults
         routing_key = routing_key if routing_key is not None else self.routing_key
@@ -205,25 +220,37 @@ class Consumer:
 
     def __init__(
         self,
-        connection: Connection,
+        connection: Connection | Channel,
         queues: list[Queue] | None = None,
         channel: Channel | None = None,
         callbacks: list[Callable] | None = None,
         no_ack: bool = False,
         accept: list[str] | None = None,
         prefetch_count: int | None = None,
+        on_message: Callable | None = None,
         **kwargs: Any,
     ):
-        self._connection = connection
-        self._channel = channel
+        # Accept either a Connection or a Channel as the first argument.
+        # If a Channel is passed (has basic_consume but not default_channel),
+        # use it directly instead of going through Connection.default_channel().
+        if hasattr(connection, "basic_consume") and not hasattr(connection, "default_channel"):
+            self._connection = getattr(connection, "connection", None)
+            self._channel = channel or connection
+        else:
+            self._connection = connection
+            self._channel = channel
         self._queues = queues or []
         self._callbacks = callbacks or []
+        # on_message receives just (message,) — raw message, no body decode.
+        # Regular callbacks receive (body, message).
+        self._on_message_callback = on_message
         self._no_ack = no_ack
         self._accept = set(accept) if accept else None
         self._prefetch_count = prefetch_count
         self._consumer_tags: list[str] = []
         self._running = False
         self._declared = False
+        self.on_decode_error = kwargs.get("on_decode_error")
 
     @property
     def queues(self) -> list[Queue]:
@@ -275,10 +302,15 @@ class Consumer:
 
     def _on_message(self, body: Any, message: Message) -> Any:
         """Handle received message."""
+        if self._on_message_callback:
+            # Raw message callback — receives just the message (no body decode)
+            result = self._on_message_callback(message)
+            if asyncio.iscoroutine(result):
+                asyncio.create_task(result)
+            return
         for callback in self._callbacks:
             result = callback(body, message)
             if asyncio.iscoroutine(result):
-                # Schedule the coroutine
                 asyncio.create_task(result)
 
     async def cancel(self) -> None:
@@ -310,6 +342,16 @@ class Consumer:
         """Add a queue to consume from."""
         if queue not in self._queues:
             self._queues.append(queue)
+
+    def consuming_from(self, queue_name: str | Queue) -> bool:
+        """Check if currently consuming from the given queue."""
+        name = queue_name if isinstance(queue_name, str) else queue_name.name
+        return any(q.name == name for q in self._queues)
+
+    async def cancel_by_queue(self, queue_name: str | Queue) -> None:
+        """Cancel consuming from a specific queue."""
+        name = queue_name if isinstance(queue_name, str) else queue_name.name
+        self._queues = [q for q in self._queues if q.name != name]
 
     async def close(self) -> None:
         """Close the consumer."""
