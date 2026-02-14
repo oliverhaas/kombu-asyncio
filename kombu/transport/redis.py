@@ -35,6 +35,7 @@ except ImportError:
 
 from kombu.log import get_logger
 from kombu.message import Message
+from kombu.transport.base import Transport as BaseTransport
 from kombu.utils.json import dumps as json_dumps
 from kombu.utils.json import loads as json_loads
 
@@ -496,7 +497,7 @@ class Channel:
         self._unacked.clear()
 
 
-class Transport:
+class Transport(BaseTransport):
     """Pure asyncio Redis transport.
 
     Uses redis.asyncio for all operations.
@@ -504,6 +505,15 @@ class Transport:
 
     Channel = Channel
     default_port = 6379
+
+    driver_type = "redis"
+    driver_name = "redis"
+
+    connection_errors = BaseTransport.connection_errors + (
+        ConnectionRefusedError,
+        TimeoutError,
+    )
+    channel_errors = BaseTransport.channel_errors
 
     def __init__(
         self,

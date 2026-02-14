@@ -18,8 +18,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from .exceptions import ChannelError, ConnectionError
 from .log import get_logger
 from .transport.base import Transport as BaseTransport  # noqa: TC001
+from .utils.url import maybe_sanitize_url
 
 if TYPE_CHECKING:
     from .entity import Queue
@@ -27,12 +29,23 @@ if TYPE_CHECKING:
     from .simple import SimpleQueue
     from .transport.base import Channel
 
-__all__ = ("Connection",)
+__all__ = ("Connection", "maybe_channel")
 
 logger = get_logger(__name__)
 
 # Transport registry - uses Any to avoid circular imports
 TRANSPORT_REGISTRY: dict[str, type[BaseTransport]] = {}
+
+
+def maybe_channel(channel: Any) -> Any:
+    """Get the channel from a Connection or Channel object.
+
+    If given a Connection, returns it unchanged (for lazy channel binding).
+    If given a Channel, returns it as-is.
+    """
+    if isinstance(channel, Connection):
+        return channel
+    return channel
 
 
 def _get_transport_class(scheme: str) -> type[BaseTransport]:
@@ -324,6 +337,61 @@ class Connection:
 
     def __repr__(self) -> str:
         return f"<Connection: {self._url} connected={self.is_connected}>"
+
+    # Connection error tuples
+
+    @property
+    def connection_errors(self) -> tuple[type[Exception], ...]:
+        """Tuple of connection exceptions.
+
+        These are exceptions that indicate the connection was lost
+        and the operation should be retried.
+        """
+        if self._transport is not None:
+            return self._transport.connection_errors
+        return (ConnectionError, ConnectionRefusedError, TimeoutError)
+
+    @property
+    def channel_errors(self) -> tuple[type[Exception], ...]:
+        """Tuple of channel exceptions.
+
+        These are exceptions that indicate the channel is broken
+        but the connection itself may be fine.
+        """
+        if self._transport is not None:
+            return self._transport.channel_errors
+        return (ChannelError,)
+
+    def as_uri(self, include_password: bool = False) -> str:
+        """Return the connection URI, with password masked by default.
+
+        Args:
+            include_password: If True, include the actual password.
+
+        Returns:
+            Connection URI string.
+        """
+        if include_password:
+            return self._url
+        return maybe_sanitize_url(self._url)
+
+    def info(self) -> dict[str, Any]:
+        """Return connection info as a dict.
+
+        Returns:
+            Dictionary with connection details.
+        """
+        parsed = urlparse(self._url)
+        transport = self._transport
+        return {
+            "hostname": parsed.hostname or "localhost",
+            "port": parsed.port or (transport.default_port if transport else None),
+            "transport": self._scheme,
+            "is_connected": self.is_connected,
+            "uri": self.as_uri(),
+            "driver_type": transport.driver_type if transport else self._scheme,
+            "driver_name": transport.driver_name if transport else self._scheme,
+        }
 
     # Aliases for backwards compatibility concepts
     @property

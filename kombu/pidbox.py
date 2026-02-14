@@ -1,14 +1,14 @@
-"""Generic process mailbox."""
+"""Generic process mailbox - async implementation."""
 
 from __future__ import annotations
 
 import socket
 import warnings
 from collections import defaultdict, deque
-from contextlib import contextmanager
 from copy import copy
 from itertools import count
 from time import time
+from typing import Any
 
 from . import Consumer, Exchange, Producer, Queue
 from .clocks import LamportClock
@@ -87,14 +87,16 @@ class Node:
     def on_decode_error(self, message, exc):
         error("Cannot decode message: %r", exc, exc_info=1)
 
-    def listen(self, channel=None, callback=None):
+    async def listen(self, channel=None, callback=None):
         consumer = self.Consumer(
-            channel=channel, callbacks=[callback or self.handle_message], on_decode_error=self.on_decode_error
+            channel=channel,
+            callbacks=[callback or self.handle_message],
+            on_decode_error=self.on_decode_error,
         )
-        consumer.consume()
+        await consumer.consume()
         return consumer
 
-    def dispatch(self, method, arguments=None, reply_to=None, ticket=None, **kwargs):
+    async def dispatch(self, method, arguments=None, reply_to=None, ticket=None, **kwargs):
         arguments = arguments or {}
         debug(
             "pidbox received method %s [reply_to:%s ticket:%s]",
@@ -112,7 +114,7 @@ class Node:
             reply = {"error": repr(exc)}
 
         if reply_to:
-            self.reply(
+            await self.reply(
                 {self.hostname: reply},
                 exchange=reply_to["exchange"],
                 routing_key=reply_to["routing_key"],
@@ -151,9 +153,14 @@ class Node:
 
     dispatch_from_message = handle_message
 
-    def reply(self, data, exchange, routing_key, ticket, **kwargs):
-        self.mailbox._publish_reply(
-            data, exchange, routing_key, ticket, channel=self.channel, serializer=self.mailbox.serializer
+    async def reply(self, data, exchange, routing_key, ticket, **kwargs):
+        await self.mailbox._publish_reply(
+            data,
+            exchange,
+            routing_key,
+            ticket,
+            channel=self.channel,
+            serializer=self.mailbox.serializer,
         )
 
 
@@ -173,9 +180,6 @@ class Mailbox:
     #: Exchange type (usually direct, or fanout for broadcast).
     type = "direct"
 
-    #: mailbox exchange (init by constructor).
-    exchange = None
-
     #: exchange to send replies to.
     reply_exchange = None
 
@@ -187,19 +191,19 @@ class Mailbox:
 
     def __init__(
         self,
-        namespace,
-        type="direct",
-        connection=None,
-        clock=None,
-        accept=None,
-        serializer=None,
-        producer_pool=None,
-        queue_ttl=None,
-        queue_expires=None,
-        queue_durable=False,
-        queue_exclusive=False,
-        reply_queue_ttl=None,
-        reply_queue_expires=10.0,
+        namespace: str,
+        type: str = "direct",
+        connection: Any = None,
+        clock: LamportClock | None = None,
+        accept: list[str] | None = None,
+        serializer: str | None = None,
+        queue_ttl: float | None = None,
+        queue_expires: float | None = None,
+        queue_durable: bool = False,
+        queue_exclusive: bool = False,
+        reply_queue_ttl: float | None = None,
+        reply_queue_expires: float = 10.0,
+        **kwargs: Any,
     ):
         self.namespace = namespace
         self.connection = connection
@@ -216,7 +220,6 @@ class Mailbox:
         self.queue_exclusive = queue_exclusive
         self.reply_queue_ttl = reply_queue_ttl
         self.reply_queue_expires = reply_queue_expires
-        self._producer_pool = producer_pool
         if queue_exclusive and queue_durable:
             raise ValueError(
                 "queue_exclusive and queue_durable cannot both be True "
@@ -232,24 +235,36 @@ class Mailbox:
         hostname = hostname or socket.gethostname()
         return self.node_cls(hostname, state, channel, handlers, mailbox=self)
 
-    def call(self, destination, command, kwargs=None, timeout=None, callback=None, channel=None):
+    async def call(self, destination, command, kwargs=None, timeout=None, callback=None, channel=None):
         kwargs = {} if not kwargs else kwargs
-        return self._broadcast(
-            command, kwargs, destination, reply=True, timeout=timeout, callback=callback, channel=channel
+        return await self._broadcast(
+            command,
+            kwargs,
+            destination,
+            reply=True,
+            timeout=timeout,
+            callback=callback,
+            channel=channel,
         )
 
-    def cast(self, destination, command, kwargs=None):
+    async def cast(self, destination, command, kwargs=None):
         kwargs = {} if not kwargs else kwargs
-        return self._broadcast(command, kwargs, destination, reply=False)
+        return await self._broadcast(command, kwargs, destination, reply=False)
 
-    def abcast(self, command, kwargs=None):
+    async def abcast(self, command, kwargs=None):
         kwargs = {} if not kwargs else kwargs
-        return self._broadcast(command, kwargs, reply=False)
+        return await self._broadcast(command, kwargs, reply=False)
 
-    def multi_call(self, command, kwargs=None, timeout=1, limit=None, callback=None, channel=None):
+    async def multi_call(self, command, kwargs=None, timeout=1, limit=None, callback=None, channel=None):
         kwargs = {} if not kwargs else kwargs
-        return self._broadcast(
-            command, kwargs, reply=True, timeout=timeout, limit=limit, callback=callback, channel=channel
+        return await self._broadcast(
+            command,
+            kwargs,
+            reply=True,
+            timeout=timeout,
+            limit=limit,
+            callback=callback,
+            channel=channel,
         )
 
     def get_reply_queue(self):
@@ -280,38 +295,25 @@ class Mailbox:
             message_ttl=self.queue_ttl,
         )
 
-    @contextmanager
-    def producer_or_acquire(self, producer=None, channel=None):
-        if producer:
-            yield producer
-        elif self.producer_pool:
-            with self.producer_pool.acquire() as producer:
-                yield producer
-        else:
-            yield Producer(channel, auto_declare=False)
+    async def _publish_reply(self, reply, exchange, routing_key, ticket, channel=None, producer=None, **opts):
+        channel = channel or await self.connection.default_channel()
+        exchange = Exchange(exchange, type="direct", delivery_mode="transient", durable=False)
+        p = producer or Producer(self.connection, channel=channel, auto_declare=False)
+        try:
+            await p.publish(
+                reply,
+                exchange=exchange,
+                routing_key=routing_key,
+                headers={
+                    "ticket": ticket,
+                    "clock": self.clock.forward(),
+                },
+            )
+        except InconsistencyError:
+            # queue probably deleted and no one is expecting a reply.
+            pass
 
-    def _publish_reply(self, reply, exchange, routing_key, ticket, channel=None, producer=None, **opts):
-        chan = channel or self.connection.default_channel
-        exchange = Exchange(exchange, exchange_type="direct", delivery_mode="transient", durable=False)
-        with self.producer_or_acquire(producer, chan) as producer:
-            try:
-                producer.publish(
-                    reply,
-                    exchange=exchange,
-                    routing_key=routing_key,
-                    declare=[exchange],
-                    headers={
-                        "ticket": ticket,
-                        "clock": self.clock.forward(),
-                    },
-                    retry=True,
-                    **opts,
-                )
-            except InconsistencyError:
-                # queue probably deleted and no one is expecting a reply.
-                pass
-
-    def _publish(
+    async def _publish(
         self,
         type,
         arguments,
@@ -320,36 +322,30 @@ class Mailbox:
         channel=None,
         timeout=None,
         serializer=None,
-        producer=None,
-        pattern=None,
-        matcher=None,
     ):
         message = {
             "method": type,
             "arguments": arguments,
             "destination": destination,
-            "pattern": pattern,
-            "matcher": matcher,
         }
-        chan = channel or self.connection.default_channel
+        channel = channel or await self.connection.default_channel()
         exchange = self.exchange
         if reply_ticket:
-            maybe_declare(self.reply_queue(chan))
+            await maybe_declare(self.reply_queue, channel)
             message.update(
-                ticket=reply_ticket, reply_to={"exchange": self.reply_exchange.name, "routing_key": self.oid}
+                ticket=reply_ticket,
+                reply_to={"exchange": self.reply_exchange.name, "routing_key": self.oid},
             )
         serializer = serializer or self.serializer
-        with self.producer_or_acquire(producer, chan) as producer:
-            producer.publish(
-                message,
-                exchange=exchange.name,
-                declare=[exchange],
-                headers={"clock": self.clock.forward(), "expires": time() + timeout if timeout else 0},
-                serializer=serializer,
-                retry=True,
-            )
+        p = Producer(self.connection, channel=channel, auto_declare=False)
+        await p.publish(
+            message,
+            exchange=exchange.name,
+            headers={"clock": self.clock.forward(), "expires": time() + timeout if timeout else 0},
+            serializer=serializer,
+        )
 
-    def _broadcast(
+    async def _broadcast(
         self,
         command,
         arguments=None,
@@ -375,34 +371,38 @@ class Mailbox:
 
         arguments = arguments or {}
         reply_ticket = (reply and uuid()) or None
-        chan = channel or self.connection.default_channel
+        channel = channel or await self.connection.default_channel()
 
         # Set reply limit to number of destinations (if specified)
         if limit is None and destination:
             limit = (destination and len(destination)) or None
 
         serializer = serializer or self.serializer
-        self._publish(
+        await self._publish(
             command,
             arguments,
             destination=destination,
             reply_ticket=reply_ticket,
-            channel=chan,
+            channel=channel,
             timeout=timeout,
             serializer=serializer,
-            pattern=pattern,
-            matcher=matcher,
         )
 
         if reply_ticket:
-            return self._collect(reply_ticket, limit=limit, timeout=timeout, callback=callback, channel=chan)
+            return await self._collect(
+                reply_ticket,
+                limit=limit,
+                timeout=timeout,
+                callback=callback,
+                channel=channel,
+            )
 
-    def _collect(self, ticket, limit=None, timeout=1, callback=None, channel=None, accept=None):
+    async def _collect(self, ticket, limit=None, timeout=1, callback=None, channel=None, accept=None):
         if accept is None:
             accept = self.accept
-        chan = channel or self.connection.default_channel
+        channel = channel or await self.connection.default_channel()
         queue = self.reply_queue
-        consumer = Consumer(chan, [queue], accept=accept, no_ack=True)
+        consumer = Consumer(self.connection, [queue], accept=accept, no_ack=True)
         responses = []
         unclaimed = self.unclaimed
         adjust_clock = self.clock.adjust
@@ -413,7 +413,6 @@ class Mailbox:
             pass
 
         def on_message(body, message):
-            # ticket header added in kombu 2.5
             header = message.headers.get
             adjust_clock(header("clock") or 0)
             expires = header("expires")
@@ -429,15 +428,15 @@ class Mailbox:
 
         consumer.register_callback(on_message)
         try:
-            with consumer:
-                for i in (limit and range(limit)) or count():
+            async with consumer:
+                for _i in (limit and range(limit)) or count():
                     try:
-                        self.connection.drain_events(timeout=timeout)
+                        await self.connection.drain_events(timeout=timeout)
                     except TimeoutError:
                         break
                 return responses
         finally:
-            chan.after_reply_message_received(queue.name)
+            pass
 
     def _get_exchange(self, namespace, type):
         return Exchange(self.exchange_fmt % namespace, type=type, durable=False, delivery_mode="transient")
@@ -451,4 +450,4 @@ class Mailbox:
 
     @cached_property
     def producer_pool(self):
-        return maybe_evaluate(self._producer_pool)
+        return maybe_evaluate(self._producer_pool) if hasattr(self, "_producer_pool") else None

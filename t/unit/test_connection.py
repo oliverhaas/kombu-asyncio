@@ -130,3 +130,51 @@ class test_Connection:
         conn = Connection("memory://")
         sq = conn.SimpleQueue("test")
         assert sq is not None
+
+    def test_connection_errors(self):
+        conn = Connection("memory://")
+        errors = conn.connection_errors
+        assert isinstance(errors, tuple)
+        assert all(issubclass(e, Exception) for e in errors)
+
+    async def test_connection_errors_from_transport(self):
+        async with Connection("memory://") as conn:
+            errors = conn.connection_errors
+            assert isinstance(errors, tuple)
+
+    def test_channel_errors(self):
+        conn = Connection("memory://")
+        errors = conn.channel_errors
+        assert isinstance(errors, tuple)
+        assert all(issubclass(e, Exception) for e in errors)
+
+    def test_as_uri(self):
+        conn = Connection("redis://user:secret@localhost:6379/0")
+        uri = conn.as_uri()
+        assert "secret" not in uri
+        assert "**" in uri
+        assert "localhost" in uri
+
+    def test_as_uri_include_password(self):
+        conn = Connection("redis://user:secret@localhost:6379/0")
+        uri = conn.as_uri(include_password=True)
+        assert "secret" in uri
+
+    def test_as_uri_no_password(self):
+        conn = Connection("memory://")
+        uri = conn.as_uri()
+        assert "memory://" in uri
+
+    def test_info(self):
+        conn = Connection("memory://")
+        info = conn.info()
+        assert isinstance(info, dict)
+        assert "transport" in info
+        assert info["transport"] == "memory"
+        assert "is_connected" in info
+
+    async def test_info_connected(self):
+        async with Connection("memory://") as conn:
+            info = conn.info()
+            assert info["is_connected"] is True
+            assert info["driver_type"] == "memory"
