@@ -250,11 +250,11 @@ class Channel:
             await self._direct_publish(exchange, routing_key, message)
 
     async def _load_bindings(self, exchange: str) -> list[tuple[str, str]]:
-        """Load bindings for an exchange, checking Redis if not cached."""
-        if exchange in self._bindings:
-            return self._bindings[exchange]
+        """Load bindings for an exchange from Redis.
 
-        # Load from Redis
+        Always loads from Redis since other connections may add or remove
+        bindings (e.g. ephemeral reply queues created by CLI invocations).
+        """
         binding_key = _binding_key(exchange)
         members = await self.client.smembers(binding_key)
         bindings = []
@@ -264,8 +264,6 @@ class Channel:
             data = json_loads(member)
             bindings.append((data["queue"], data.get("routing_key", "")))
 
-        if bindings:
-            self._bindings[exchange] = bindings
         return bindings
 
     async def _direct_publish(

@@ -298,6 +298,8 @@ class Mailbox:
     async def _publish_reply(self, reply, exchange, routing_key, ticket, channel=None, producer=None, **opts):
         channel = channel or await self.connection.default_channel()
         exchange = Exchange(exchange, type="direct", delivery_mode="transient", durable=False)
+        # Declare the exchange so the channel knows the type for routing.
+        await exchange.declare(channel)
         p = producer or Producer(self.connection, channel=channel, auto_declare=False)
         try:
             await p.publish(
@@ -337,6 +339,8 @@ class Mailbox:
                 reply_to={"exchange": self.reply_exchange.name, "routing_key": self.oid},
             )
         serializer = serializer or self.serializer
+        # Declare the exchange so the channel knows it's fanout (not direct).
+        await exchange.declare(channel)
         p = Producer(self.connection, channel=channel, auto_declare=False)
         await p.publish(
             message,

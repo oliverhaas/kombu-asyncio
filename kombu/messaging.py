@@ -300,18 +300,18 @@ class Consumer:
 
         self._running = True
 
-    def _on_message(self, body: Any, message: Message) -> Any:
+    async def _on_message(self, body: Any, message: Message) -> Any:
         """Handle received message."""
         if self._on_message_callback:
             # Raw message callback — receives just the message (no body decode)
             result = self._on_message_callback(message)
             if asyncio.iscoroutine(result):
-                asyncio.create_task(result)
+                await result
             return
         for callback in self._callbacks:
             result = callback(body, message)
             if asyncio.iscoroutine(result):
-                asyncio.create_task(result)
+                await result
 
     async def cancel(self) -> None:
         """Cancel consuming."""
