@@ -256,6 +256,7 @@ class Connection:
 
     async def ensure_connection(
         self,
+        errback: Any = None,
         max_retries: int | None = None,
         interval_start: float = 2.0,
         interval_step: float = 2.0,
@@ -267,11 +268,12 @@ class Connection:
         Will reconnect if connection is lost.
 
         Args:
+            errback: Optional callback called on each retry with (exc, interval).
             max_retries: Maximum number of retries (None = unlimited).
             interval_start: Initial retry interval.
             interval_step: Interval increase per retry.
             interval_max: Maximum retry interval.
-            callback: Called after each retry attempt.
+            callback: Optional callback called between retries (e.g., for shutdown checks).
 
         Returns:
             self
@@ -289,8 +291,11 @@ class Connection:
                 if max_retries is not None and retries >= max_retries:
                     raise
 
+                if errback:
+                    errback(exc, interval)
+
                 if callback:
-                    callback(exc, interval)
+                    callback()
 
                 logger.warning(
                     "Connection failed, retrying in %.2fs: %r",
@@ -392,6 +397,36 @@ class Connection:
             "driver_type": transport.driver_type if transport else self._scheme,
             "driver_name": transport.driver_name if transport else self._scheme,
         }
+
+    def supports_exchange_type(self, exchange_type: str) -> bool:
+        """Check if the transport supports a given exchange type.
+
+        Args:
+            exchange_type: Exchange type (e.g., 'direct', 'fanout', 'topic').
+
+        Returns:
+            True if the exchange type is supported.
+        """
+        if self._transport is not None:
+            return exchange_type in getattr(
+                self._transport,
+                "exchange_types",
+                {"direct", "fanout", "topic"},
+            )
+        # Default: assume all standard types are supported
+        return exchange_type in {"direct", "fanout", "topic"}
+
+    @property
+    def qos_semantics_matches_spec(self) -> bool:
+        """Whether the transport's QoS semantics match the AMQP spec.
+
+        RabbitMQ 3.3+ changed basic_qos semantics (global vs per-consumer).
+        Returns False for AMQP transports to trigger the global flag.
+        For Redis/Memory, returns True (spec-like semantics).
+        """
+        if self._transport is not None:
+            return getattr(self._transport, "qos_semantics_matches_spec", True)
+        return True
 
     # Aliases for backwards compatibility concepts
     @property
