@@ -62,9 +62,9 @@ class TestChannel:
         # Clean up first
         await channel.queue_purge(queue_name)
 
-        # Publish a message
+        # Publish a message (body must be valid JSON since content-type is application/json)
         message = (
-            b'{"body": "hello", "content-type": "application/json", '
+            b'{"body": {"key": "hello"}, "content-type": "application/json", '
             b'"content-encoding": "utf-8", "properties": {}, "headers": {}}'
         )
         await channel.publish(message, exchange="", routing_key=queue_name)
@@ -72,7 +72,7 @@ class TestChannel:
         # Get the message
         msg = await channel.get(queue_name, no_ack=True)
         assert msg is not None
-        assert msg.payload == "hello"
+        assert msg.payload == {"key": "hello"}
 
         # Clean up
         await channel.queue_purge(queue_name)
@@ -83,7 +83,7 @@ class TestChannel:
 
         # Publish some messages
         message = (
-            b'{"body": "test", "content-type": "application/json", '
+            b'{"body": {"v": "test"}, "content-type": "application/json", '
             b'"content-encoding": "utf-8", "properties": {}, "headers": {}}'
         )
         await channel.publish(message, exchange="", routing_key=queue_name)
@@ -101,7 +101,7 @@ class TestChannel:
 
         # Publish
         message = (
-            b'{"body": "ack_test", "content-type": "application/json", '
+            b'{"body": {"v": "ack_test"}, "content-type": "application/json", '
             b'"content-encoding": "utf-8", "properties": {}, "headers": {}}'
         )
         await channel.publish(message, exchange="", routing_key=queue_name)
@@ -129,7 +129,7 @@ class TestChannel:
 
         # Publish
         message = (
-            b'{"body": "reject_test", "content-type": "application/json", '
+            b'{"body": {"v": "reject_test"}, "content-type": "application/json", '
             b'"content-encoding": "utf-8", "properties": {}, "headers": {}}'
         )
         await channel.publish(message, exchange="", routing_key=queue_name)

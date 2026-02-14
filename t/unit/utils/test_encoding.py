@@ -53,40 +53,42 @@ class newbytes(bytes):
 class newstr(str):
     """Mock class to simulate python-future newstr class"""
 
+    __slots__ = ()
+
     def encode(self, encoding=None, errors=None):
         return newbytes(super().encode(encoding, errors))
 
 
 class test_safe_str:
-    def setup_method(self):
-        self._encoding = self.patching("sys.getfilesystemencoding")
-        self._encoding.return_value = "ascii"
-
-    def test_when_bytes(self):
+    @patch("sys.getfilesystemencoding", return_value="ascii")
+    def test_when_bytes(self, mock_encoding):
         assert safe_str("foo") == "foo"
 
-    def test_when_newstr(self):
+    @patch("sys.getfilesystemencoding", return_value="ascii")
+    def test_when_newstr(self, mock_encoding):
         """Simulates using python-future package under 2.7"""
         assert str(safe_str(newstr("foo"))) == "foo"
 
-    def test_when_unicode(self):
+    @patch("sys.getfilesystemencoding", return_value="ascii")
+    def test_when_unicode(self, mock_encoding):
         assert isinstance(safe_str("foo"), str)
 
-    def test_when_encoding_utf8(self):
-        self._encoding.return_value = "utf-8"
+    @patch("sys.getfilesystemencoding", return_value="utf-8")
+    def test_when_encoding_utf8(self, mock_encoding):
         assert default_encoding() == "utf-8"
         s = "The quiæk fåx jømps øver the lazy dåg"
         res = safe_str(s)
         assert isinstance(res, str)
 
-    def test_when_containing_high_chars(self):
-        self._encoding.return_value = "ascii"
+    @patch("sys.getfilesystemencoding", return_value="ascii")
+    def test_when_containing_high_chars(self, mock_encoding):
         s = "The quiæk fåx jømps øver the lazy dåg"
         res = safe_str(s)
         assert isinstance(res, str)
         assert len(s) == len(res)
 
-    def test_when_not_string(self):
+    @patch("sys.getfilesystemencoding", return_value="ascii")
+    def test_when_not_string(self, mock_encoding):
         o = object()
         assert safe_str(o) == repr(o)
 

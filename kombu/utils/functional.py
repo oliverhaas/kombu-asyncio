@@ -7,10 +7,9 @@ import random
 import threading
 from collections import OrderedDict, UserDict
 from collections.abc import Iterable, Mapping
+from functools import wraps
 from itertools import count, repeat
 from time import sleep, time
-
-from functools import wraps
 
 from .encoding import safe_repr as _safe_repr
 

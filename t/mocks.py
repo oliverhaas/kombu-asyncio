@@ -1,216 +1,361 @@
+"""Mock transport for testing kombu-asyncio.
+
+Provides async MockChannel and MockTransport that implement
+the base ABC from kombu.transport.base, useful for unit testing
+without requiring a real broker.
+"""
+
 from __future__ import annotations
 
-import time
-from itertools import count
-from typing import TYPE_CHECKING
+import asyncio
+import re
+import uuid
+from collections import defaultdict
+from typing import TYPE_CHECKING, Any
 from unittest.mock import Mock
 
-from kombu.transport import base
-from kombu.utils import json
+from kombu.message import Message
+from kombu.transport.base import Channel as BaseChannel
+from kombu.transport.base import Transport as BaseTransport
+from kombu.utils.json import loads as json_loads
 
 if TYPE_CHECKING:
-    from types import TracebackType
+    from collections.abc import Callable
+    from collections.abc import Set as AbstractSet
+
+    from kombu.entity import Exchange, Queue
+
+__all__ = ("MockChannel", "MockTransport", "ContextMock")
 
 
 class _ContextMock(Mock):
-    """Dummy class implementing __enter__ and __exit__
-    as the :keyword:`with` statement requires these to be implemented
-    in the class, not just the instance."""
+    """Mock with async context manager support."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
 
     def __enter__(self):
         return self
 
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None:
+    def __exit__(self, *args):
         pass
 
 
 def ContextMock(*args, **kwargs):
-    """Mock that mocks :keyword:`with` statement contexts."""
+    """Mock that supports both sync and async context managers."""
     obj = _ContextMock(*args, **kwargs)
-    obj.attach_mock(_ContextMock(), "__enter__")
-    obj.attach_mock(_ContextMock(), "__exit__")
-    obj.__enter__.return_value = obj
-    # if __exit__ return a value the exception is ignored,
-    # so it must return None here.
-    obj.__exit__.return_value = None
+    obj.__aenter__ = _ContextMock(return_value=obj)
+    obj.__aexit__ = _ContextMock(return_value=None)
     return obj
 
 
-def PromiseMock(*args, **kwargs):
-    m = Mock(*args, **kwargs)
+class MockChannel(BaseChannel):
+    """Async mock channel for testing.
 
-    def on_throw(exc=None, *args, **kwargs):
-        if exc:
-            raise exc
-        raise
+    Implements the Channel ABC with in-memory storage.
+    Tracks all calls for assertion in tests.
+    """
 
-    m.throw.side_effect = on_throw
-    m.set_error_state.side_effect = on_throw
-    m.throw1.side_effect = on_throw
-    return m
+    def __init__(self, transport: MockTransport | None = None):
+        self._transport = transport
+        self._closed = False
+        self._channel_id = str(uuid.uuid4())[:8]
 
+        # In-memory state
+        self._exchanges: dict[str, dict] = {}
+        self._queues: dict[str, asyncio.Queue] = {}
+        self._bindings: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        self._consumers: dict[str, tuple[str, Callable, bool]] = {}
+        self._unacked: dict[str, tuple[str, bytes]] = {}
+        self._delivery_tag_counter = 0
 
-class MockPool:
-    def __init__(self, value=None):
-        self.value = value or ContextMock()
+        # For no-ack tracking
+        self.no_ack_consumers: set[str] | None = set()
 
-    def acquire(self, **kwargs):
-        return self.value
+        # Call tracking
+        self.calls: list[tuple[str, tuple, dict]] = []
 
+    def _track(self, method: str, *args, **kwargs):
+        self.calls.append((method, args, kwargs))
 
-class Message(base.Message):
-    def __init__(self, *args, **kwargs):
-        self.throw_decode_error = kwargs.get("throw_decode_error", False)
-        super().__init__(*args, **kwargs)
+    def _next_delivery_tag(self) -> str:
+        self._delivery_tag_counter += 1
+        return f"{self._channel_id}.{self._delivery_tag_counter}"
 
-    def decode(self):
-        if self.throw_decode_error:
-            raise ValueError("can't decode message")
-        return super().decode()
+    def _get_queue(self, name: str) -> asyncio.Queue:
+        if name not in self._queues:
+            self._queues[name] = asyncio.Queue()
+        return self._queues[name]
 
+    async def close(self) -> None:
+        self._track("close")
+        if self._closed:
+            return
+        self._closed = True
+        # Requeue unacked
+        for delivery_tag, (queue_name, data) in self._unacked.items():
+            await self._get_queue(queue_name).put(data)
+        self._unacked.clear()
+        self._consumers.clear()
 
-class Channel(base.StdChannel):
-    open = True
-    throw_decode_error = False
-    _ids = count(1)
-
-    def __init__(self, connection):
-        self.connection = connection
-        self.called = []
-        self.deliveries = count(1)
-        self.to_deliver = []
-        self.events = {"basic_return": set()}
-        self.channel_id = next(self._ids)
-
-    def _called(self, name):
-        self.called.append(name)
-
-    def __contains__(self, key):
-        return key in self.called
-
-    def exchange_declare(self, *args, **kwargs):
-        self._called("exchange_declare")
-
-    def prepare_message(self, body, priority=0, content_type=None, content_encoding=None, headers=None, properties={}):
-        self._called("prepare_message")
-        return {
-            "body": body,
-            "headers": headers,
-            "properties": properties,
-            "priority": priority,
-            "content_type": content_type,
-            "content_encoding": content_encoding,
+    async def declare_exchange(self, exchange: Exchange) -> None:
+        self._track("declare_exchange", exchange)
+        self._exchanges[exchange.name] = {
+            "type": exchange.type,
+            "durable": exchange.durable,
+            "auto_delete": exchange.auto_delete,
         }
 
-    def basic_publish(self, message, exchange="", routing_key="", mandatory=False, immediate=False, **kwargs):
-        self._called("basic_publish")
-        return message, exchange, routing_key
+    async def exchange_delete(self, exchange: str) -> None:
+        self._track("exchange_delete", exchange)
+        self._exchanges.pop(exchange, None)
+        self._bindings.pop(exchange, None)
 
-    def exchange_delete(self, *args, **kwargs):
-        self._called("exchange_delete")
+    async def declare_queue(self, queue: Queue) -> str:
+        self._track("declare_queue", queue)
+        name = queue.name or f"amq.gen-{uuid.uuid4().hex[:8]}"
+        self._get_queue(name)
+        return name
 
-    def queue_declare(self, *args, **kwargs):
-        self._called("queue_declare")
+    async def queue_bind(
+        self,
+        queue: str,
+        exchange: str,
+        routing_key: str = "",
+        arguments: dict | None = None,
+    ) -> None:
+        self._track("queue_bind", queue, exchange, routing_key)
+        binding = (queue, routing_key)
+        if binding not in self._bindings[exchange]:
+            self._bindings[exchange].append(binding)
 
-    def queue_bind(self, *args, **kwargs):
-        self._called("queue_bind")
-
-    def queue_unbind(self, *args, **kwargs):
-        self._called("queue_unbind")
-
-    def queue_delete(self, queue, if_unused=False, if_empty=False, **kwargs):
-        self._called("queue_delete")
-
-    def basic_get(self, *args, **kwargs):
-        self._called("basic_get")
+    async def queue_unbind(
+        self,
+        queue: str,
+        exchange: str,
+        routing_key: str = "",
+        arguments: dict | None = None,
+    ) -> None:
+        self._track("queue_unbind", queue, exchange, routing_key)
+        binding = (queue, routing_key)
         try:
-            return self.to_deliver.pop()
-        except IndexError:
+            self._bindings[exchange].remove(binding)
+        except ValueError:
             pass
 
-    def queue_purge(self, *args, **kwargs):
-        self._called("queue_purge")
+    async def queue_purge(self, queue: str) -> int:
+        self._track("queue_purge", queue)
+        q = self._get_queue(queue)
+        count = q.qsize()
+        while not q.empty():
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        return count
 
-    def basic_consume(self, *args, **kwargs):
-        self._called("basic_consume")
+    async def queue_delete(
+        self,
+        queue: str,
+        if_unused: bool = False,
+        if_empty: bool = False,
+    ) -> int:
+        self._track("queue_delete", queue)
+        q = self._queues.pop(queue, None)
+        count = q.qsize() if q else 0
+        # Remove bindings
+        for exchange_bindings in self._bindings.values():
+            exchange_bindings[:] = [(q_name, rk) for q_name, rk in exchange_bindings if q_name != queue]
+        return count
 
-    def basic_cancel(self, *args, **kwargs):
-        self._called("basic_cancel")
+    async def publish(
+        self,
+        message: bytes,
+        exchange: str,
+        routing_key: str,
+        **kwargs: Any,
+    ) -> None:
+        self._track("publish", message, exchange, routing_key)
+        exchange_meta = self._exchanges.get(exchange, {"type": "direct"})
+        exchange_type = exchange_meta.get("type", "direct")
 
-    def basic_ack(self, *args, **kwargs):
-        self._called("basic_ack")
+        if exchange_type == "fanout":
+            for q_name, _rk in self._bindings.get(exchange, []):
+                await self._get_queue(q_name).put(message)
+        elif exchange_type == "topic":
+            for q_name, pattern in self._bindings.get(exchange, []):
+                if _topic_match(pattern, routing_key):
+                    await self._get_queue(q_name).put(message)
+        # Direct: use routing_key as queue name, or check bindings
+        elif self._bindings.get(exchange):
+            for q_name, rk in self._bindings[exchange]:
+                if rk == routing_key:
+                    await self._get_queue(q_name).put(message)
+        else:
+            await self._get_queue(routing_key).put(message)
 
-    def basic_recover(self, requeue=False):
-        self._called("basic_recover")
+    async def get(
+        self,
+        queue: str,
+        no_ack: bool = False,
+        accept: AbstractSet[str] | None = None,
+    ) -> Message | None:
+        self._track("get", queue)
+        q = self._get_queue(queue)
+        try:
+            data = q.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
 
-    def exchange_bind(self, *args, **kwargs):
-        self._called("exchange_bind")
+        delivery_tag = self._next_delivery_tag()
+        return self._make_message(data, delivery_tag, queue, "", no_ack)
 
-    def exchange_unbind(self, *args, **kwargs):
-        self._called("exchange_unbind")
+    def _make_message(
+        self,
+        data: Any,
+        delivery_tag: str,
+        queue: str,
+        consumer_tag: str,
+        no_ack: bool,
+    ) -> Message:
+        """Build a Message from raw queue data."""
+        msg_data = json_loads(data) if isinstance(data, (str, bytes)) else data
 
-    def close(self):
-        self._called("close")
+        if isinstance(msg_data, dict) and "body" in msg_data:
+            body = msg_data["body"]
+            content_type = msg_data.get("content-type", "application/json")
+            content_encoding = msg_data.get("content-encoding", "utf-8")
+            headers = msg_data.get("headers", {})
+            properties = msg_data.get("properties", {})
+        else:
+            body = data
+            content_type = "application/json"
+            content_encoding = "utf-8"
+            headers = {}
+            properties = {}
 
-    def message_to_python(self, message, *args, **kwargs):
-        self._called("message_to_python")
-        return Message(
-            body=json.dumps(message),
+        message = Message(
+            body=body,
+            delivery_tag=delivery_tag,
+            content_type=content_type,
+            content_encoding=content_encoding,
+            headers=headers,
+            properties=properties,
+            delivery_info={
+                "exchange": "",
+                "routing_key": queue,
+                "consumer_tag": consumer_tag,
+            },
             channel=self,
-            delivery_tag=next(self.deliveries),
-            throw_decode_error=self.throw_decode_error,
-            content_type="application/json",
-            content_encoding="utf-8",
         )
 
-    def flow(self, active):
-        self._called("flow")
+        if not no_ack:
+            self._unacked[delivery_tag] = (queue, data)
 
-    def basic_reject(self, delivery_tag, requeue=False):
-        if requeue:
-            return self._called("basic_reject:requeue")
-        return self._called("basic_reject")
+        return message
 
-    def basic_qos(self, prefetch_size=0, prefetch_count=0, apply_global=False):
-        self._called("basic_qos")
+    async def basic_consume(
+        self,
+        queue: str,
+        callback: Callable[[Message], Any],
+        consumer_tag: str | None = None,
+        no_ack: bool = False,
+    ) -> str:
+        tag = consumer_tag or f"ctag.{uuid.uuid4().hex[:8]}"
+        self._track("basic_consume", queue, tag)
+        self._consumers[tag] = (queue, callback, no_ack)
+        if no_ack and self.no_ack_consumers is not None:
+            self.no_ack_consumers.add(tag)
+        return tag
+
+    async def basic_cancel(self, consumer_tag: str) -> None:
+        self._track("basic_cancel", consumer_tag)
+        self._consumers.pop(consumer_tag, None)
+        if self.no_ack_consumers is not None:
+            self.no_ack_consumers.discard(consumer_tag)
+
+    async def drain_events(self, timeout: float | None = None) -> bool:
+        self._track("drain_events", timeout)
+        if not self._consumers:
+            return False
+
+        for tag, (queue_name, callback, no_ack) in list(self._consumers.items()):
+            q = self._get_queue(queue_name)
+            try:
+                if timeout is not None and timeout > 0:
+                    data = await asyncio.wait_for(q.get(), timeout=timeout)
+                else:
+                    data = q.get_nowait()
+            except (asyncio.QueueEmpty, TimeoutError, asyncio.TimeoutError):
+                continue
+
+            delivery_tag = self._next_delivery_tag()
+            message = self._make_message(data, delivery_tag, queue_name, tag, no_ack)
+
+            decoded = message.decode()
+            callback(decoded, message)
+            return True
+
+        return False
+
+    async def basic_ack(self, delivery_tag: str, multiple: bool = False) -> None:
+        self._track("basic_ack", delivery_tag)
+        self._unacked.pop(delivery_tag, None)
+
+    async def basic_reject(self, delivery_tag: str, requeue: bool = True) -> None:
+        self._track("basic_reject", delivery_tag, requeue)
+        entry = self._unacked.pop(delivery_tag, None)
+        if requeue and entry:
+            queue_name, data = entry
+            await self._get_queue(queue_name).put(data)
 
 
-class Connection:
-    connected = True
+class MockTransport(BaseTransport):
+    """Async mock transport for testing."""
 
-    def __init__(self, client):
-        self.client = client
+    Channel = MockChannel
+    driver_type = "mock"
+    driver_name = "mock"
+    default_port = 0
 
-    def channel(self):
-        return Channel(self)
+    def __init__(self, url: str = "mock://", **options: Any):
+        super().__init__(url, **options)
+        self._connected = False
+        self._channels: list[MockChannel] = []
+        self.calls: list[tuple[str, tuple, dict]] = []
+
+    def _track(self, method: str, *args, **kwargs):
+        self.calls.append((method, args, kwargs))
+
+    async def connect(self) -> None:
+        self._track("connect")
+        self._connected = True
+
+    async def close(self) -> None:
+        self._track("close")
+        for ch in self._channels:
+            await ch.close()
+        self._channels.clear()
+        self._connected = False
+
+    async def create_channel(self) -> MockChannel:
+        self._track("create_channel")
+        ch = MockChannel(transport=self)
+        self._channels.append(ch)
+        return ch
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    def driver_version(self) -> str:
+        return "mock-1.0"
 
 
-class Transport(base.Transport):
-    def establish_connection(self):
-        return Connection(self.client)
-
-    def create_channel(self, connection):
-        return connection.channel()
-
-    def drain_events(self, connection, **kwargs):
-        return "event"
-
-    def close_connection(self, connection):
-        connection.connected = False
-
-
-class TimeoutingTransport(Transport):
-    recoverable_connection_errors = (TimeoutError,)
-
-    def __init__(self, connect_timeout=1, **kwargs):
-        self.connect_timeout = connect_timeout
-        super().__init__(**kwargs)
-
-    def establish_connection(self):
-        time.sleep(self.connect_timeout)
-        raise TimeoutError("timed out")
+def _topic_match(pattern: str, routing_key: str) -> bool:
+    """Match AMQP-style topic patterns."""
+    pattern_re = pattern.replace(".", r"\.").replace("*", r"[^.]+").replace("#", r".*")
+    return bool(re.match(f"^{pattern_re}$", routing_key))

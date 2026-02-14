@@ -248,6 +248,25 @@ class Channel:
         else:
             await self._direct_publish(exchange, routing_key, message)
 
+    async def _load_bindings(self, exchange: str) -> list[tuple[str, str]]:
+        """Load bindings for an exchange, checking Redis if not cached."""
+        if exchange in self._bindings:
+            return self._bindings[exchange]
+
+        # Load from Redis
+        binding_key = _binding_key(exchange)
+        members = await self.client.smembers(binding_key)
+        bindings = []
+        for member in members:
+            if isinstance(member, bytes):
+                member = member.decode()
+            data = json_loads(member)
+            bindings.append((data["queue"], data.get("routing_key", "")))
+
+        if bindings:
+            self._bindings[exchange] = bindings
+        return bindings
+
     async def _direct_publish(
         self,
         exchange: str,
@@ -255,8 +274,9 @@ class Channel:
         message: bytes,
     ) -> None:
         """Publish to direct exchange."""
-        if exchange and exchange in self._bindings:
-            for queue, rk in self._bindings[exchange]:
+        if exchange:
+            bindings = await self._load_bindings(exchange)
+            for queue, rk in bindings:
                 if rk == routing_key:
                     await self.client.lpush(_queue_key(queue), message)
         else:
@@ -270,9 +290,9 @@ class Channel:
     ) -> None:
         """Publish to fanout exchange."""
         # Publish to all bound queues
-        if exchange in self._bindings:
-            for queue, _ in self._bindings[exchange]:
-                await self.client.lpush(_queue_key(queue), message)
+        bindings = await self._load_bindings(exchange)
+        for queue, _ in bindings:
+            await self.client.lpush(_queue_key(queue), message)
         # Also publish to pub/sub for real-time consumers
         await self.client.publish(exchange, message)
 
@@ -283,10 +303,8 @@ class Channel:
         message: bytes,
     ) -> None:
         """Publish to topic exchange with pattern matching."""
-        if exchange not in self._bindings:
-            return
-
-        for queue, pattern in self._bindings[exchange]:
+        bindings = await self._load_bindings(exchange)
+        for queue, pattern in bindings:
             if self._topic_match(routing_key, pattern):
                 await self.client.lpush(_queue_key(queue), message)
 
@@ -526,7 +544,7 @@ class Transport:
 
         # Close Redis client
         if self._client:
-            await self._client.close()
+            await self._client.aclose()
             self._client = None
 
         self._connected = False

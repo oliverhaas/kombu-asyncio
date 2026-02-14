@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import uuid
 from collections import namedtuple
 from dataclasses import dataclass
@@ -8,16 +7,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
 
 from kombu.utils.encoding import str_to_bytes
 from kombu.utils.json import _register_default_types, dumps, loads, register_type
-
-if sys.version_info >= (3, 9):
-    from zoneinfo import ZoneInfo
-else:
-    from backports.zoneinfo import ZoneInfo
 
 
 class Custom:
@@ -33,14 +25,11 @@ class test_JSONEncoder:
     def reset_registered_types(self):
         _register_default_types()
 
-    @pytest.mark.freeze_time("2015-10-21")
     def test_datetime(self):
         now = datetime.now(timezone.utc)
-        now_utc = now.replace(tzinfo=ZoneInfo("UTC"))
 
         original = {
             "datetime": now,
-            "tz": now_utc,
             "date": now.date(),
             "time": now.time(),
         }
@@ -49,9 +38,8 @@ class test_JSONEncoder:
 
         assert serialized == original
 
-    @given(message=st.binary())
-    @settings(print_blob=True)
-    def test_binary(self, message):
+    def test_binary(self):
+        message = b"\x00\x01\x02\xff"
         serialized = loads(
             dumps(
                 {

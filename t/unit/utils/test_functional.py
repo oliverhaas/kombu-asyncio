@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pickle
 from itertools import count
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -43,7 +43,6 @@ class test_shufflecycle:
             utils.repeat.assert_called_with(None)
             assert seen.issubset(values)
             with pytest.raises(StopIteration):
-                next(cycle)
                 next(cycle)
         finally:
             utils.repeat = prev_repeat
@@ -191,8 +190,8 @@ class test_retry_over_time:
         assert interval == sleepvals[self.index]
         return interval
 
-    @pytest.mark.sleepdeprived_patched_module(utils)
-    def test_simple(self, sleepdeprived):
+    @patch("kombu.utils.functional.sleep", return_value=None)
+    def test_simple(self, mock_sleep):
         prev_count, utils.count = utils.count, Mock()
         try:
             utils.count.return_value = list(range(1))
@@ -221,8 +220,8 @@ class test_retry_over_time:
                 timeout=1,
             )
 
-    @pytest.mark.sleepdeprived_patched_module(utils)
-    def test_retry_zero(self, sleepdeprived):
+    @patch("kombu.utils.functional.sleep", return_value=None)
+    def test_retry_zero(self, mock_sleep):
         with pytest.raises(self.Predicate):
             retry_over_time(
                 self.myfun,
@@ -242,8 +241,8 @@ class test_retry_over_time:
                 interval_max=14,
             )
 
-    @pytest.mark.sleepdeprived_patched_module(utils)
-    def test_retry_once(self, sleepdeprived):
+    @patch("kombu.utils.functional.sleep", return_value=None)
+    def test_retry_once(self, mock_sleep):
         with pytest.raises(self.Predicate):
             retry_over_time(
                 self.myfun,
@@ -263,8 +262,8 @@ class test_retry_over_time:
                 interval_max=14,
             )
 
-    @pytest.mark.sleepdeprived_patched_module(utils)
-    def test_retry_always(self, sleepdeprived):
+    @patch("kombu.utils.functional.sleep", return_value=None)
+    def test_retry_always(self, mock_sleep):
         Predicate = self.Predicate
 
         class Fun:

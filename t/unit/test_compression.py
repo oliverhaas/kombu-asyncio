@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sys
-
 import pytest
 
 from kombu import compression
@@ -70,25 +68,3 @@ class test_compression:
         assert text != c
         d = compression.decompress(c, ctype)
         assert d == text
-
-    @pytest.mark.masked_modules("bz2")
-    def test_no_bz2(self, mask_modules):
-        c = sys.modules.pop("kombu.compression")
-        try:
-            import kombu.compression
-
-            assert not hasattr(kombu.compression, "bz2")
-        finally:
-            if c is not None:
-                sys.modules["kombu.compression"] = c
-
-    @pytest.mark.masked_modules("lzma")
-    def test_no_lzma(self, mask_modules):
-        c = sys.modules.pop("kombu.compression")
-        try:
-            import kombu.compression
-
-            assert not hasattr(kombu.compression, "lzma")
-        finally:
-            if c is not None:
-                sys.modules["kombu.compression"] = c

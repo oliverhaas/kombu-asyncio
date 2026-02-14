@@ -14,7 +14,7 @@ from .utils.functional import ChannelPromise
 
 if TYPE_CHECKING:
     from kombu.connection import Connection
-    from kombu.transport.virtual import Channel
+    from kombu.transport.base import Channel
 
 
 __all__ = ("MaybeChannelBound", "Object")

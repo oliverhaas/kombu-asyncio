@@ -55,8 +55,8 @@ class test_LogMixin:
         self.log.info("info")
         self.logger.log.assert_called_with(logging.INFO, "Log - info")
 
-    def test_warning(self):
-        self.log.warning("warning")
+    def test_warn(self):
+        self.log.warning("warning")  # LogMixin uses warn(), not warning()
         self.logger.log.assert_called_with(logging.WARNING, "Log - warning")
 
     def test_error(self):

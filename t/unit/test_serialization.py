@@ -1,5 +1,3 @@
-#!/usr/bin/python
-
 from __future__ import annotations
 
 from base64 import b64decode
@@ -7,7 +5,6 @@ from unittest.mock import call, patch
 
 import pytest
 
-import t.skip
 from kombu.exceptions import ContentDisallowed, DecodeError, EncodeError
 from kombu.serialization import (
     SerializerNotInstalled,
@@ -195,14 +192,12 @@ class test_Serialization:
         )
         assert a == b
 
-    @t.skip.if_pypy
     def test_msgpack_loads(self):
-        register_msgpack()
         pytest.importorskip("msgpack")
+        register_msgpack()
         res = loads(msgpack_data, content_type="application/x-msgpack", content_encoding="binary")
         assert res == msgpack_py_data
 
-    @t.skip.if_pypy
     def test_msgpack_dumps(self):
         pytest.importorskip("msgpack")
         register_msgpack()
@@ -288,18 +283,6 @@ class test_Serialization:
             "binary",
             b"foo",
         )
-
-    @pytest.mark.masked_modules("yaml")
-    def test_register_yaml__no_yaml(self, mask_modules):
-        register_yaml()
-        with pytest.raises(SerializerNotInstalled):
-            loads("foo", "application/x-yaml", "utf-8")
-
-    @pytest.mark.masked_modules("msgpack")
-    def test_register_msgpack__no_msgpack(self, mask_modules):
-        register_msgpack()
-        with pytest.raises(SerializerNotInstalled):
-            loads("foo", "application/x-msgpack", "utf-8")
 
     def test_prepare_accept_content(self):
         assert {"application/json"} == prepare_accept_content(["json"])

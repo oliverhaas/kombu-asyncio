@@ -171,7 +171,6 @@ class Channel(ABC):
 
         Default implementation does nothing.
         """
-        pass  # noqa: B027
 
     # Async context manager support
 

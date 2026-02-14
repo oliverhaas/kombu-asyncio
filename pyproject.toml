@@ -5,7 +5,15 @@ description = "Pure asyncio messaging library for Python"
 readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.10"
-keywords = ["messaging", "asyncio", "redis", "queue", "async", "python", "celery"]
+keywords = [
+  "messaging",
+  "asyncio",
+  "redis",
+  "queue",
+  "async",
+  "python",
+  "celery",
+]
 authors = [{ name = "Ask Solem", email = "auvipy@gmail.com" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -123,6 +131,7 @@ ignore = [
   "ARG005",  # Unused lambda argument
   "B018",    # Useless expression
   "B025",    # Duplicate exception handler
+  "B027",    # Empty method in abstract class - intentional concrete defaults
   "B028",    # No stacklevel in warnings
   "B905",    # Zip without strict
   "C408",    # Unnecessary dict call
@@ -179,8 +188,13 @@ unfixable = []
 
 [tool.ruff.lint.per-file-ignores]
 "t/**" = [
+  "B017",    # Assert blind exception - tests sometimes need broad catches
+  "PERF401", # List comprehension vs for loop - readability in tests
+  "PLR0133", # Constant comparison - test assertions
   "PLR0913", # Too many arguments in test fixtures
   "PLR2004", # Magic values in tests are fine
+  "PT006",   # Parametrize tuple format - legacy tests
+  "PT011",   # pytest.raises too broad - legacy tests
   "S101",    # assert in tests
 ]
 
@@ -188,7 +202,11 @@ unfixable = []
 testpaths = ["t/unit"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-markers = ["unit: marks tests as unit tests", "integration: marks tests as integration tests"]
+python_classes = ["Test*", "test_*"]
+markers = [
+  "unit: marks tests as unit tests",
+  "integration: marks tests as integration tests",
+]
 
 [tool.coverage.run]
 branch = true
@@ -196,4 +214,8 @@ source = ["kombu"]
 omit = ["*/__init__.py"]
 
 [tool.coverage.report]
-exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]

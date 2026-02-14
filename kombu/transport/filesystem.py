@@ -442,8 +442,8 @@ class Channel(BaseChannel):
                 # File may be locked or already moved
                 continue
 
-            def _read():
-                with open(dest_path, "rb") as f:
+            def _read(path=dest_path):
+                with open(path, "rb") as f:
                     return f.read()
 
             try:

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
-
 from functools import wraps
+from typing import TYPE_CHECKING
 
 from kombu.log import get_logger
 

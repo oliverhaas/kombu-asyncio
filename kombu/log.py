@@ -66,6 +66,8 @@ class LogMixin:
     def warn(self, *args, **kwargs):
         return self.log(logging.WARNING, *args, **kwargs)
 
+    warning = warn
+
     def error(self, *args, **kwargs):
         kwargs.setdefault("exc_info", True)
         return self.log(logging.ERROR, *args, **kwargs)
