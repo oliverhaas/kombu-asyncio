@@ -230,6 +230,10 @@ class Consumer:
         """Get the list of queues."""
         return self._queues
 
+    def register_callback(self, callback: Callable) -> None:
+        """Register a callback to be called when a message is received."""
+        self._callbacks.append(callback)
+
     async def _ensure_channel(self) -> Channel:
         """Ensure we have a channel."""
         if self._channel is None:

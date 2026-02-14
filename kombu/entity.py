@@ -148,6 +148,8 @@ class Queue:
         max_priority: int | None = None,
         no_ack: bool = False,
         channel: Channel | None = None,
+        alias: str | None = None,
+        **kwargs: Any,
     ):
         self.name = name
         if isinstance(exchange, str):
@@ -169,6 +171,7 @@ class Queue:
         self.max_priority = max_priority
         self.no_ack = no_ack
         self._channel = channel
+        self.alias = alias
 
         # Build queue_arguments from convenience properties
         if expires is not None:
@@ -181,6 +184,61 @@ class Queue:
             self.queue_arguments["x-max-length-bytes"] = max_length_bytes
         if max_priority is not None:
             self.queue_arguments["x-max-priority"] = max_priority
+
+    @classmethod
+    def from_dict(
+        cls,
+        name: str,
+        *,
+        exchange: Exchange | str | None = None,
+        exchange_type: str | None = None,
+        routing_key: str | None = None,
+        **kwargs: Any,
+    ) -> Queue:
+        """Create Queue from a dictionary of options.
+
+        This is used for backward compatibility when adding queues from config.
+        """
+        if exchange is not None or exchange_type is not None:
+            exchange_name = exchange if isinstance(exchange, str) else (exchange.name if exchange else "")
+            exchange = Exchange(
+                exchange_name or name,
+                type=exchange_type or "direct",
+            )
+        return cls(
+            name=name,
+            exchange=exchange,
+            routing_key=routing_key or name,
+            **kwargs,
+        )
+
+    def as_dict(self, recurse: bool = False) -> dict[str, Any]:
+        """Return Queue as a dictionary.
+
+        Args:
+            recurse: If True, also convert Exchange to dict.
+        """
+        d: dict[str, Any] = {
+            "name": self.name,
+            "routing_key": self.routing_key,
+            "durable": self.durable,
+            "exclusive": self.exclusive,
+            "auto_delete": self.auto_delete,
+            "no_ack": self.no_ack,
+            "alias": self.alias,
+            "queue_arguments": self.queue_arguments,
+            "binding_arguments": self.binding_arguments,
+        }
+        if recurse and self.exchange:
+            d["exchange"] = {
+                "name": self.exchange.name,
+                "type": self.exchange.type,
+                "durable": self.exchange.durable,
+                "auto_delete": self.exchange.auto_delete,
+            }
+        else:
+            d["exchange"] = self.exchange
+        return d
 
     def __hash__(self) -> int:
         return hash(f"Q|{self.name}")
