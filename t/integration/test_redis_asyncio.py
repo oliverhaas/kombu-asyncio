@@ -110,14 +110,14 @@ class TestChannel:
         msg = await channel.get(queue_name, no_ack=False)
         assert msg is not None
 
-        # Should be in unacked
-        assert msg.delivery_tag in channel._unacked
+        # Should be in delivered (unacked tracking)
+        assert msg.delivery_tag in channel._delivered
 
         # Ack it
         await msg.ack()
 
-        # Should no longer be in unacked
-        assert msg.delivery_tag not in channel._unacked
+        # Should no longer be in delivered
+        assert msg.delivery_tag not in channel._delivered
         assert msg.acknowledged
 
         await channel.queue_purge(queue_name)
@@ -259,11 +259,15 @@ class TestSimpleQueue:
             for i in range(5):
                 await queue.put({"index": i})
 
-            # Get all messages
-            for i in range(5):
+            # Get all messages (order within same-score is lexicographic by
+            # delivery tag — with UUID tags this is not strictly FIFO)
+            received = set()
+            for _ in range(5):
                 msg = await queue.get(timeout=5)
-                assert msg.payload["index"] == i
+                received.add(msg.payload["index"])
                 await msg.ack()
+
+            assert received == {0, 1, 2, 3, 4}
 
             await queue.clear()
 
@@ -306,12 +310,13 @@ class TestExchangeTypes:
 
     async def test_topic_exchange_pattern_matching(self, channel):
         """Test topic exchange pattern matching."""
-        # Test the pattern matching logic
-        assert channel._topic_match("user.created", "user.*") is True
-        assert channel._topic_match("user.created", "user.#") is True
-        assert channel._topic_match("user.profile.updated", "user.#") is True
-        assert channel._topic_match("user.created", "order.*") is False
-        assert channel._topic_match("user.profile.updated", "user.*") is False
+        from kombu.transport.redis import _topic_match
+
+        assert _topic_match("user.created", "user.*") is True
+        assert _topic_match("user.created", "user.#") is True
+        assert _topic_match("user.profile.updated", "user.#") is True
+        assert _topic_match("user.created", "order.*") is False
+        assert _topic_match("user.profile.updated", "user.*") is False
 
 
 if __name__ == "__main__":
