@@ -17,9 +17,6 @@ from kombu.entity import Exchange, Queue
 from kombu.message import Message
 from kombu.transport.amqp import Channel, Transport, _get_exchange_type
 
-pytestmark = pytest.mark.asyncio(loop_scope="function")
-
-
 # ---------------------------------------------------------------------------
 # Mock helpers
 # ---------------------------------------------------------------------------
@@ -221,6 +218,14 @@ class TestChannelClose:
         await ch.close()
         assert ch._closed is True
 
+    async def test_close_survives_aio_channel_close_error(self):
+        aio_ch = _make_aio_channel()
+        aio_ch.close = AsyncMock(side_effect=RuntimeError("close failed"))
+        ch = Channel(aio_ch)
+
+        await ch.close()
+        assert ch._closed is True
+
 
 class TestChannelExchange:
     async def test_declare_exchange(self, channel, aio_channel):
@@ -273,6 +278,11 @@ class TestChannelExchange:
         aio_channel.exchange_delete.assert_awaited_once_with("doomed")
         assert "doomed" not in channel._declared_exchanges
 
+    async def test_exchange_delete_not_in_cache(self, channel, aio_channel):
+        await channel.exchange_delete("uncached")
+        aio_channel.exchange_delete.assert_awaited_once_with("uncached")
+        # No KeyError — pop(default=None) handles it
+
 
 class TestChannelQueue:
     async def test_declare_queue(self, channel, aio_channel):
@@ -313,6 +323,15 @@ class TestChannelQueue:
         _, kwargs = aio_channel.declare_queue.call_args
         assert kwargs["arguments"] == {"x-message-ttl": 60000, "x-max-length": 100}
 
+    async def test_declare_queue_no_queue_arguments(self, channel, aio_channel):
+        q = Queue("plain_q")
+        aio_channel.declare_queue.return_value = _make_aio_queue("plain_q")
+
+        await channel.declare_queue(q)
+
+        _, kwargs = aio_channel.declare_queue.call_args
+        assert kwargs["arguments"] is None
+
     async def test_queue_bind(self, channel, aio_channel):
         aio_q = _make_aio_queue("q1")
         aio_ex = _make_aio_exchange("ex1")
@@ -343,6 +362,20 @@ class TestChannelQueue:
         await channel.queue_bind("nonexistent", "ex1", routing_key="rk")
         # No error, no action
 
+    async def test_queue_bind_with_arguments(self, channel):
+        aio_q = _make_aio_queue("q1")
+        aio_ex = _make_aio_exchange("ex1")
+        channel._declared_queues["q1"] = aio_q
+        channel._declared_exchanges["ex1"] = aio_ex
+
+        await channel.queue_bind("q1", "ex1", routing_key="rk", arguments={"x-match": "any"})
+
+        aio_q.bind.assert_awaited_once_with(
+            aio_ex,
+            routing_key="rk",
+            arguments={"x-match": "any"},
+        )
+
     async def test_queue_unbind(self, channel):
         aio_q = _make_aio_queue("q1")
         aio_ex = _make_aio_exchange("ex1")
@@ -358,6 +391,10 @@ class TestChannelQueue:
         # No exchange declared — should be a no-op
         await channel.queue_unbind("q1", "missing_ex")
 
+    async def test_queue_unbind_missing_queue_skipped(self, channel):
+        channel._declared_exchanges["ex1"] = _make_aio_exchange("ex1")
+        await channel.queue_unbind("missing_q", "ex1")
+
     async def test_queue_purge(self, channel):
         aio_q = _make_aio_queue("q1")
         aio_q.purge.return_value = SimpleNamespace(message_count=5)
@@ -371,6 +408,14 @@ class TestChannelQueue:
     async def test_queue_purge_unknown_returns_zero(self, channel):
         assert await channel.queue_purge("nonexistent") == 0
 
+    async def test_queue_purge_result_without_message_count(self, channel):
+        aio_q = _make_aio_queue("q1")
+        aio_q.purge.return_value = object()  # no message_count attr
+        channel._declared_queues["q1"] = aio_q
+
+        count = await channel.queue_purge("q1")
+        assert count == 0
+
     async def test_queue_delete(self, channel, aio_channel):
         channel._declared_queues["q1"] = _make_aio_queue("q1")
         aio_channel.queue_delete.return_value = SimpleNamespace(message_count=3)
@@ -380,6 +425,21 @@ class TestChannelQueue:
         assert count == 3
         aio_channel.queue_delete.assert_awaited_once_with("q1", if_unused=True, if_empty=True)
         assert "q1" not in channel._declared_queues
+
+    async def test_queue_delete_defaults(self, channel, aio_channel):
+        channel._declared_queues["q1"] = _make_aio_queue("q1")
+        aio_channel.queue_delete.return_value = SimpleNamespace(message_count=0)
+
+        await channel.queue_delete("q1")
+
+        aio_channel.queue_delete.assert_awaited_once_with("q1", if_unused=False, if_empty=False)
+
+    async def test_queue_delete_result_without_message_count(self, channel, aio_channel):
+        channel._declared_queues["q1"] = _make_aio_queue("q1")
+        aio_channel.queue_delete.return_value = object()
+
+        count = await channel.queue_delete("q1")
+        assert count == 0
 
 
 class TestChannelPublish:
@@ -483,6 +543,59 @@ class TestChannelPublish:
 
         aio_msg = aio_channel.default_exchange.publish.call_args[0][0]
         assert aio_msg.headers == {"task": "myapp.add", "id": "abc-123"}
+
+    async def test_publish_with_message_id(self, channel, aio_channel):
+        envelope = (
+            b'{"body": "x", "content-type": "application/json",'
+            b' "content-encoding": "utf-8",'
+            b' "properties": {"message_id": "msg-789"},'
+            b' "headers": {}}'
+        )
+
+        await channel.publish(envelope, exchange="", routing_key="q")
+
+        aio_msg = aio_channel.default_exchange.publish.call_args[0][0]
+        assert aio_msg.message_id == "msg-789"
+
+    async def test_publish_empty_headers(self, channel, aio_channel):
+        envelope = (
+            b'{"body": "x", "content-type": "application/json",'
+            b' "content-encoding": "utf-8", "properties": {}, "headers": {}}'
+        )
+
+        await channel.publish(envelope, exchange="", routing_key="q")
+
+        aio_msg = aio_channel.default_exchange.publish.call_args[0][0]
+        # Empty dict → headers={} or None (aio-pika normalises)
+        assert not aio_msg.headers
+
+    async def test_publish_no_properties(self, channel, aio_channel):
+        """Envelope with empty properties — body and content type are correct,
+        no explicit AMQP property fields were set from the envelope."""
+        envelope = (
+            b'{"body": "plain", "content-type": "text/plain",'
+            b' "content-encoding": "utf-8", "properties": {}, "headers": {}}'
+        )
+
+        await channel.publish(envelope, exchange="", routing_key="q")
+
+        aio_msg = aio_channel.default_exchange.publish.call_args[0][0]
+        assert aio_msg.body == b"plain"
+        assert aio_msg.content_type == "text/plain"
+        assert aio_msg.correlation_id is None
+        assert aio_msg.reply_to is None
+
+    async def test_publish_transient_delivery_mode(self, channel, aio_channel):
+        envelope = (
+            b'{"body": "x", "content-type": "application/json",'
+            b' "content-encoding": "utf-8",'
+            b' "properties": {"delivery_mode": 1}, "headers": {}}'
+        )
+
+        await channel.publish(envelope, exchange="", routing_key="q")
+
+        aio_msg = aio_channel.default_exchange.publish.call_args[0][0]
+        assert aio_msg.delivery_mode == aio_pika.DeliveryMode.NOT_PERSISTENT
 
 
 class TestChannelGet:
@@ -602,6 +715,24 @@ class TestChannelConsume:
         # Should not raise
         await channel.basic_cancel("nonexistent")
 
+    async def test_basic_consume_undeclared_queue(self, channel):
+        """Consume on a queue not in _declared_queues — consumer is registered
+        but no aio-pika consume is started."""
+        tag = await channel.basic_consume("undeclared", MagicMock(), consumer_tag="tag1")
+
+        assert tag == "tag1"
+        assert "tag1" in channel._consumers
+        # No aio-pika queue to call .consume on
+
+    async def test_basic_cancel_survives_cancel_error(self, channel):
+        aio_q = _make_aio_queue("q1")
+        aio_q.cancel = AsyncMock(side_effect=RuntimeError("cancel boom"))
+        channel._declared_queues["q1"] = aio_q
+        channel._consumers["tag1"] = ("q1", MagicMock(), False)
+
+        await channel.basic_cancel("tag1")
+        assert "tag1" not in channel._consumers
+
 
 class TestChannelDrainEvents:
     async def test_drain_events_delivers_message(self, channel):
@@ -693,6 +824,63 @@ class TestChannelDrainEvents:
 
         assert "55" not in channel._delivery_tag_map
 
+    async def test_drain_events_no_matching_consumer(self, channel):
+        """Message for a queue with no registered consumer is silently dropped."""
+        msg = Message(
+            body=b'"orphan"',
+            delivery_tag="99",
+            content_type="application/json",
+            content_encoding="utf-8",
+            channel=channel,
+        )
+        channel._consumers["tag1"] = ("q1", MagicMock(), False)
+        await channel._message_queue.put(("other_queue", msg))
+
+        result = await channel.drain_events(timeout=1.0)
+        assert result is True  # message was pulled from queue, just not delivered
+
+    async def test_drain_events_decode_failure_falls_back_to_body(self, channel):
+        """If message.decode() raises, raw body is passed to callback."""
+        msg = MagicMock(spec=Message)
+        msg.body = b"raw bytes"
+        msg.decode.side_effect = ValueError("bad encoding")
+
+        received = []
+
+        def callback(body, message):
+            received.append(body)
+
+        channel._consumers["tag1"] = ("q1", callback, False)
+        await channel._message_queue.put(("q1", msg))
+
+        await channel.drain_events(timeout=1.0)
+
+        assert received == [b"raw bytes"]
+
+    async def test_drain_events_multiple_sequential(self, channel):
+        """Multiple sequential drain_events calls deliver messages in order."""
+        bodies = []
+
+        def callback(body, message):
+            bodies.append(body)
+
+        channel._consumers["tag1"] = ("q1", callback, False)
+
+        for i in range(3):
+            msg = Message(
+                body=f'{{"n": {i}}}'.encode(),
+                delivery_tag=str(i),
+                content_type="application/json",
+                content_encoding="utf-8",
+                channel=channel,
+            )
+            await channel._message_queue.put(("q1", msg))
+
+        for _ in range(3):
+            assert await channel.drain_events(timeout=1.0) is True
+
+        assert len(bodies) == 3
+
 
 class TestChannelAckReject:
     async def test_basic_ack(self, channel):
@@ -749,6 +937,15 @@ class TestChannelAckReject:
         # No underlying channel attribute — should not raise
         del aio_channel.channel
         await channel.basic_recover(requeue=True)
+
+    async def test_basic_recover_requeue_false(self, channel, aio_channel):
+        underlying = MagicMock()
+        underlying.basic_recover = AsyncMock()
+        aio_channel.channel = underlying
+
+        await channel.basic_recover(requeue=False)
+
+        underlying.basic_recover.assert_awaited_once_with(requeue=False)
 
 
 class TestChannelConvertMessage:
@@ -840,6 +1037,14 @@ class TestChannelConvertMessage:
         msg = channel._convert_message(incoming, "q1", "1")
 
         assert msg.delivery_info == {"exchange": "", "routing_key": ""}
+
+    def test_none_headers_from_incoming(self, channel):
+        incoming = _make_incoming_message()
+        incoming.headers = None
+
+        msg = channel._convert_message(incoming, "q1", "1")
+
+        assert msg.headers == {}
 
 
 class TestChannelContextManager:
@@ -1040,6 +1245,68 @@ class TestTransport:
         t = Transport(url="amqp://localhost/")
         version = t.driver_version()
         assert version  # aio-pika is installed, so we get a real version
+
+    async def test_close_when_not_connected(self):
+        t = Transport(url="amqp://localhost/")
+        # Should not raise
+        await t.close()
+        assert t._connected is False
+
+    @patch("kombu.transport.amqp.aio_pika")
+    async def test_close_when_connection_already_closed(self, mock_aio_pika):
+        mock_conn = _make_aio_connection()
+        mock_aio_pika.connect = AsyncMock(return_value=mock_conn)
+        mock_aio_pika.Message = aio_pika.Message
+        mock_aio_pika.DeliveryMode = aio_pika.DeliveryMode
+        mock_aio_pika.ExchangeType = aio_pika.ExchangeType
+
+        t = Transport(url="amqp://localhost/")
+        await t.connect()
+        mock_conn.is_closed = True
+        await t.close()
+
+        # Connection already closed — close() should not be called
+        mock_conn.close.assert_not_awaited()
+
+    @patch("kombu.transport.amqp.aio_pika")
+    async def test_create_channel_auto_connects(self, mock_aio_pika):
+        mock_aio_ch = _make_aio_channel()
+        mock_conn = _make_aio_connection()
+        mock_conn.channel = AsyncMock(return_value=mock_aio_ch)
+        mock_aio_pika.connect = AsyncMock(return_value=mock_conn)
+        mock_aio_pika.Message = aio_pika.Message
+        mock_aio_pika.DeliveryMode = aio_pika.DeliveryMode
+        mock_aio_pika.ExchangeType = aio_pika.ExchangeType
+
+        t = Transport(url="amqp://localhost/")
+        assert t._connected is False
+
+        ch = await t.create_channel()
+
+        assert t._connected is True
+        assert isinstance(ch, Channel)
+
+    @patch("kombu.transport.amqp.aio_pika")
+    async def test_create_channel_no_prefetch_by_default(self, mock_aio_pika):
+        mock_aio_ch = _make_aio_channel()
+        mock_conn = _make_aio_connection()
+        mock_conn.channel = AsyncMock(return_value=mock_aio_ch)
+        mock_aio_pika.connect = AsyncMock(return_value=mock_conn)
+        mock_aio_pika.Message = aio_pika.Message
+        mock_aio_pika.DeliveryMode = aio_pika.DeliveryMode
+        mock_aio_pika.ExchangeType = aio_pika.ExchangeType
+
+        t = Transport(url="amqp://localhost/")
+        await t.connect()
+        await t.create_channel()
+
+        mock_aio_ch.set_qos.assert_not_awaited()
+
+    def test_driver_version_missing_attr(self):
+        t = Transport(url="amqp://localhost/")
+        with patch("kombu.transport.amqp.aio_pika") as mock_mod:
+            del mock_mod.__version__
+            assert t.driver_version() == "N/A"
 
 
 # ---------------------------------------------------------------------------
