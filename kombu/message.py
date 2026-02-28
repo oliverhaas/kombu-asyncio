@@ -11,7 +11,7 @@ from .exceptions import MessageStateError, reraise
 from .serialization import loads
 
 if TYPE_CHECKING:
-    from .transport.redis import Channel
+    from .transport.base import Channel
 
 __all__ = ("Message",)
 

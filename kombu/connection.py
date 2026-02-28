@@ -52,10 +52,13 @@ def _get_transport_class(scheme: str) -> type[BaseTransport]:
     """Get transport class for a URL scheme."""
     if not TRANSPORT_REGISTRY:
         # Lazy load transports
+        from .transport.amqp import Transport as AMQPTransport
         from .transport.filesystem import Transport as FilesystemTransport
         from .transport.memory import Transport as MemoryTransport
         from .transport.redis import Transport as RedisTransport
 
+        TRANSPORT_REGISTRY["amqp"] = AMQPTransport
+        TRANSPORT_REGISTRY["amqps"] = AMQPTransport
         TRANSPORT_REGISTRY["redis"] = RedisTransport
         TRANSPORT_REGISTRY["rediss"] = RedisTransport
         TRANSPORT_REGISTRY["memory"] = MemoryTransport

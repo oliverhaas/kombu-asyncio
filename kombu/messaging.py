@@ -13,7 +13,7 @@ from .utils.json import dumps as json_dumps
 if TYPE_CHECKING:
     from .connection import Connection
     from .message import Message
-    from .transport.redis import Channel
+    from .transport.base import Channel
 
 __all__ = ("Consumer", "Producer")
 

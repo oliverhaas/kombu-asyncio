@@ -41,6 +41,7 @@ Source = "https://github.com/oliverhaas/kombu"
 
 [project.optional-dependencies]
 # Transport dependencies
+amqp = ["aio-pika>=9.0.0"]
 redis = ["redis>=7.1.0"]
 # Serialization formats
 msgpack = ["msgpack"]

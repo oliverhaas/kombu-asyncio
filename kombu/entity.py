@@ -6,7 +6,7 @@ import numbers
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .transport.redis import Channel
+    from .transport.base import Channel
 
 __all__ = ("Exchange", "Queue", "binding")
 
