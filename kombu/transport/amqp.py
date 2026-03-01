@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 try:
@@ -121,8 +121,8 @@ class Channel:
         for tag in list(self._consumers):
             try:
                 await self.basic_cancel(tag)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Error cancelling consumer %s: %s", tag, exc)
 
         self._consumers.clear()
         self._delivery_tag_map.clear()
@@ -130,8 +130,8 @@ class Channel:
         if not self._aio_channel.is_closed:
             try:
                 await self._aio_channel.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Error closing AMQP channel: %s", exc)
 
     # ---- exchange operations -----------------------------------------------
 
@@ -188,7 +188,7 @@ class Channel:
 
         aio_exchange = self._declared_exchanges.get(exchange)
         if not aio_exchange:
-            aio_exchange = await self._aio_channel.get_exchange(exchange)
+            aio_exchange = await self._aio_channel.get_exchange(exchange, ensure=False)
             self._declared_exchanges[exchange] = aio_exchange
 
         await aio_queue.bind(aio_exchange, routing_key=routing_key, arguments=arguments)
@@ -272,6 +272,15 @@ class Channel:
             msg_kwargs["reply_to"] = properties["reply_to"]
         if "message_id" in properties:
             msg_kwargs["message_id"] = properties["message_id"]
+        if "timestamp" in properties:
+            msg_kwargs["timestamp"] = datetime.fromtimestamp(
+                float(properties["timestamp"]),
+                tz=timezone.utc,
+            )
+        if "app_id" in properties:
+            msg_kwargs["app_id"] = properties["app_id"]
+        if "type" in properties:
+            msg_kwargs["type"] = properties["type"]
 
         aio_message = aio_pika.Message(**msg_kwargs)
 
@@ -359,8 +368,8 @@ class Channel:
             if aio_queue:
                 try:
                     await aio_queue.cancel(consumer_tag)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Error cancelling consumer %s on queue: %s", consumer_tag, exc)
 
         if self.no_ack_consumers is not None:
             self.no_ack_consumers.discard(consumer_tag)
@@ -439,6 +448,12 @@ class Channel:
             properties["reply_to"] = incoming.reply_to
         if incoming.message_id:
             properties["message_id"] = incoming.message_id
+        if incoming.timestamp:
+            properties["timestamp"] = incoming.timestamp.timestamp()
+        if incoming.app_id:
+            properties["app_id"] = incoming.app_id
+        if incoming.type:
+            properties["type"] = incoming.type
 
         return Message(
             body=incoming.body,
@@ -482,11 +497,15 @@ class Transport(BaseTransport):
     driver_type = "amqp"
     driver_name = "aio-pika"
 
+    exchange_types = {"direct", "fanout", "topic", "headers"}
+
     #: RabbitMQ 3.3+ changed basic.qos semantics
     qos_semantics_matches_spec = False
 
-    connection_errors = (
-        BaseTransport.connection_errors + (ConnectionRefusedError, TimeoutError) + _amqp_connection_errors
+    connection_errors = tuple(
+        set(
+            BaseTransport.connection_errors + (ConnectionRefusedError, TimeoutError) + _amqp_connection_errors,
+        ),
     )
 
     channel_errors = BaseTransport.channel_errors + _amqp_channel_errors

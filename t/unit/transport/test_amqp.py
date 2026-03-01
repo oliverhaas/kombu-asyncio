@@ -5,7 +5,7 @@ All aio-pika objects are mocked — no RabbitMQ broker required.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -79,6 +79,9 @@ def _make_incoming_message(
     correlation_id: str | None = None,
     reply_to: str | None = None,
     message_id: str | None = None,
+    timestamp: datetime | None = None,
+    app_id: str | None = None,
+    type: str | None = None,
 ) -> MagicMock:
     """Create a mock aio-pika IncomingMessage."""
     msg = MagicMock(spec=aio_pika.abc.AbstractIncomingMessage)
@@ -95,6 +98,9 @@ def _make_incoming_message(
     msg.correlation_id = correlation_id
     msg.reply_to = reply_to
     msg.message_id = message_id
+    msg.timestamp = timestamp
+    msg.app_id = app_id
+    msg.type = type
     msg.ack = AsyncMock()
     msg.reject = AsyncMock()
     return msg
@@ -350,7 +356,7 @@ class TestChannelQueue:
 
         await channel.queue_bind("q1", "remote_ex", routing_key="rk")
 
-        aio_channel.get_exchange.assert_awaited_once_with("remote_ex")
+        aio_channel.get_exchange.assert_awaited_once_with("remote_ex", ensure=False)
         assert channel._declared_exchanges["remote_ex"] is fetched_ex
         aio_q.bind.assert_awaited_once()
 
@@ -584,6 +590,34 @@ class TestChannelPublish:
         assert aio_msg.content_type == "text/plain"
         assert aio_msg.correlation_id is None
         assert aio_msg.reply_to is None
+
+    async def test_publish_with_timestamp(self, channel, aio_channel):
+        envelope = (
+            b'{"body": "x", "content-type": "application/json",'
+            b' "content-encoding": "utf-8",'
+            b' "properties": {"timestamp": 1700000000.0},'
+            b' "headers": {}}'
+        )
+
+        await channel.publish(envelope, exchange="", routing_key="q")
+
+        aio_msg = aio_channel.default_exchange.publish.call_args[0][0]
+        expected_ts = datetime.fromtimestamp(1700000000.0, tz=timezone.utc)
+        assert aio_msg.timestamp == expected_ts
+
+    async def test_publish_with_app_id_and_type(self, channel, aio_channel):
+        envelope = (
+            b'{"body": "x", "content-type": "application/json",'
+            b' "content-encoding": "utf-8",'
+            b' "properties": {"app_id": "celery", "type": "myapp.add"},'
+            b' "headers": {}}'
+        )
+
+        await channel.publish(envelope, exchange="", routing_key="q")
+
+        aio_msg = aio_channel.default_exchange.publish.call_args[0][0]
+        assert aio_msg.app_id == "celery"
+        assert aio_msg.type == "myapp.add"
 
     async def test_publish_transient_delivery_mode(self, channel, aio_channel):
         envelope = (
@@ -1038,6 +1072,35 @@ class TestChannelConvertMessage:
 
         assert msg.delivery_info == {"exchange": "", "routing_key": ""}
 
+    def test_timestamp_app_id_type_mapped(self, channel):
+        ts = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        incoming = _make_incoming_message(
+            delivery_tag=1,
+            timestamp=ts,
+            app_id="celery",
+            type="myapp.add",
+        )
+
+        msg = channel._convert_message(incoming, "q1", "1")
+
+        assert msg.properties["timestamp"] == ts.timestamp()
+        assert msg.properties["app_id"] == "celery"
+        assert msg.properties["type"] == "myapp.add"
+
+    def test_none_timestamp_app_id_type_omitted(self, channel):
+        incoming = _make_incoming_message(
+            delivery_tag=1,
+            timestamp=None,
+            app_id=None,
+            type=None,
+        )
+
+        msg = channel._convert_message(incoming, "q1", "1")
+
+        assert "timestamp" not in msg.properties
+        assert "app_id" not in msg.properties
+        assert "type" not in msg.properties
+
     def test_none_headers_from_incoming(self, channel):
         incoming = _make_incoming_message()
         incoming.headers = None
@@ -1301,6 +1364,13 @@ class TestTransport:
         await t.create_channel()
 
         mock_aio_ch.set_qos.assert_not_awaited()
+
+    def test_exchange_types_attribute(self):
+        assert Transport.exchange_types == {"direct", "fanout", "topic", "headers"}
+
+    def test_no_duplicate_connection_errors(self):
+        errors = Transport.connection_errors
+        assert len(errors) == len(set(errors))
 
     def test_driver_version_missing_attr(self):
         t = Transport(url="amqp://localhost/")
