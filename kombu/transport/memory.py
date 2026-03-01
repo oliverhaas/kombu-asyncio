@@ -326,7 +326,9 @@ class Channel(BaseChannel):
 
         # No messages available, wait with timeout
         effective_timeout = timeout if timeout else 1.0
-        queues = [self._get_queue(q) for q, _, _ in self._consumers.values()]
+        # Capture consumer list once — dict could change during await below
+        consumer_list = list(self._consumers.values())
+        queues = [self._get_queue(q) for q, _, _ in consumer_list]
 
         # Create tasks to wait on all queues
         wait_tasks = [asyncio.create_task(q.get()) for q in queues]
@@ -351,10 +353,8 @@ class Channel(BaseChannel):
                 for i, task in enumerate(wait_tasks):
                     if task in done:
                         data = task.result()
-                        # Find the corresponding consumer
-                        queue_list = list(self._consumers.values())
-                        if i < len(queue_list):
-                            queue, callback, no_ack = queue_list[i]
+                        if i < len(consumer_list):
+                            queue, callback, no_ack = consumer_list[i]
                             message = self._create_message(queue, data, no_ack)
                             await self._deliver_message(callback, message)
                             return True

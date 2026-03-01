@@ -7,8 +7,11 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from .entity import Exchange, Queue
+from .log import get_logger
 from .serialization import dumps
 from .utils.json import dumps as json_dumps
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -130,8 +133,8 @@ class Producer:
                 if hasattr(entity, "declare"):
                     try:
                         await entity.declare(channel)
-                    except Exception:
-                        pass  # Best effort
+                    except Exception as exc:
+                        logger.debug("Failed to declare %r: %s", entity, exc)
 
         # Resolve defaults
         routing_key = routing_key if routing_key is not None else self.routing_key

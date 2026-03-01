@@ -12,7 +12,7 @@ from .entity import Exchange, Queue
 if TYPE_CHECKING:
     from .connection import Connection
     from .message import Message
-    from .transport.redis import Channel
+    from .transport.base import Channel
 
 __all__ = ("SimpleBuffer", "SimpleQueue")
 
@@ -207,8 +207,8 @@ class SimpleQueue:
                 delivered = await channel.drain_events(timeout=min(remaining or 1.0, 1.0))
                 if delivered and self._buffer:
                     return self._buffer.popleft()
-            except Exception:
-                pass
+            except (TimeoutError, asyncio.TimeoutError):
+                pass  # drain_events timed out, loop and check remaining
 
             if remaining is not None:
                 elapsed = asyncio.get_event_loop().time() - start_time

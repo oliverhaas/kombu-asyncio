@@ -211,7 +211,7 @@ class Message:
             The return value is memoized, use `_decode` to force
             re-evaluation.
         """
-        if not self._decoded_cache:
+        if self._decoded_cache is None:
             self._decoded_cache = self._decode()
         return self._decoded_cache
 
@@ -231,7 +231,7 @@ class Message:
     @property
     def payload(self) -> Any:
         """The decoded message body."""
-        return self._decoded_cache if self._decoded_cache else self.decode()
+        return self._decoded_cache if self._decoded_cache is not None else self.decode()
 
     def __repr__(self) -> str:
         body_len = len(self.body) if self.body is not None else None

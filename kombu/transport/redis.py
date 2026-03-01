@@ -752,7 +752,8 @@ class Channel:
                 queue_name = None
                 for q, (exch, _) in self._fanout_queues.items():
                     fs = self._fanout_stream_key(exch)
-                    if stream_key == fs or stream_key.endswith(fs):
+                    unprefixed_stream = self._unprefixed(stream_key)
+                    if stream_key == fs or unprefixed_stream == fs:
                         queue_name = q
                         break
                 if not queue_name:
@@ -886,7 +887,7 @@ class Channel:
         The Lua script atomically reads the routing_key (queue) from the message
         hash and adds the message back to that queue. Sets the redelivered flag.
         """
-        message_key = f"{MESSAGE_KEY_PREFIX}{delivery_tag}"
+        message_key = self._message_key(delivery_tag)
 
         script = await self._get_requeue_script()
         result = await script(
@@ -897,6 +898,7 @@ class Channel:
                 self._message_ttl,
                 self._global_keyprefix,
                 QUEUE_KEY_PREFIX,
+                delivery_tag,
             ],
         )
         return bool(result)
