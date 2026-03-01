@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -163,8 +164,21 @@ class Producer:
         if delivery_mode is not None:
             properties["delivery_mode"] = delivery_mode
 
+        # Encode body for JSON envelope
+        if isinstance(serialized_body, bytes):
+            try:
+                body_str = serialized_body.decode(content_encoding or "utf-8")
+            except (UnicodeDecodeError, LookupError):
+                # Binary serializers (pickle, msgpack) produce non-UTF-8 bytes
+                body_str = base64.b64encode(serialized_body).decode("ascii")
+                if headers is None:
+                    headers = {}
+                headers["body_encoding"] = "base64"
+        else:
+            body_str = serialized_body
+
         message = {
-            "body": serialized_body.decode("utf-8") if isinstance(serialized_body, bytes) else serialized_body,
+            "body": body_str,
             "content-type": content_type,
             "content-encoding": content_encoding,
             "properties": properties,
@@ -374,8 +388,7 @@ class Consumer:
 
         try:
             await self._connection.drain_events(timeout=1.0)
-        except Exception:
-            # Timeout or other error, continue iteration
+        except TimeoutError:
             pass
 
     async def iterate(
@@ -408,7 +421,7 @@ class Consumer:
                 await self._connection.drain_events(timeout=1.0)
                 count += 1
                 yield
-            except Exception:
+            except TimeoutError:
                 yield
 
     async def __aenter__(self) -> Consumer:

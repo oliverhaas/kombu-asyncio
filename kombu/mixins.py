@@ -17,7 +17,7 @@ from .utils.objects import cached_property
 
 if TYPE_CHECKING:
     from .connection import Connection
-    from .transport.redis import Channel
+    from .transport.base import Channel
 
 __all__ = ("ConsumerMixin", "ConsumerProducerMixin")
 
@@ -357,12 +357,11 @@ class ConsumerProducerMixin(ConsumerMixin):
         Creates producer connection if not already connected.
         """
         if self._producer is None:
-            conn = await self.producer_connection
+            conn = await self._get_producer_connection()
             self._producer = Producer(conn)
         return self._producer
 
-    @property
-    async def producer_connection(self) -> Connection:
+    async def _get_producer_connection(self) -> Connection:
         """Get or create producer connection."""
         if self._producer_connection is None:
             conn = self.connection.clone()

@@ -32,6 +32,7 @@ Transport Options
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import urllib.parse
 import uuid
@@ -793,7 +794,12 @@ class Channel:
         headers = payload.get("headers", {})
 
         if isinstance(body, str):
-            body = body.encode(content_encoding)
+            if headers.get("body_encoding") == "base64":
+                body = base64.b64decode(body)
+            elif content_encoding not in ("binary", "ascii-8bit"):
+                body = body.encode(content_encoding)
+            else:
+                body = body.encode("utf-8")
         elif isinstance(body, (dict, list)):
             body = json_dumps(body).encode("utf-8")
 
@@ -1009,7 +1015,7 @@ class Channel:
             return
         queue_at = time() + self._visibility_timeout
         async with self.client.pipeline(transaction=False) as pipe:
-            for tag, (queue, _) in self._delivered.items():
+            for tag, (queue, _) in list(self._delivered.items()):
                 if tag not in self._fanout_tags:
                     index_key = self._messages_index_key(queue)
                     # XX = only update if member already exists

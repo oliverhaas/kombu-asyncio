@@ -132,7 +132,7 @@ class Node:
     def handle_cast(self, method, arguments):
         return self.handle(method, arguments)
 
-    def handle_message(self, body, message=None):
+    async def handle_message(self, body, message=None):
         destination = body.get("destination")
         pattern = body.get("pattern")
         matcher = body.get("matcher")
@@ -149,7 +149,7 @@ class Node:
         else:
             run_dispatch = True
         if run_dispatch:
-            return self.dispatch(**body)
+            return await self.dispatch(**body)
 
     dispatch_from_message = handle_message
 

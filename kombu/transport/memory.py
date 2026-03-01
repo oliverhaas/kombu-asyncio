@@ -22,6 +22,7 @@ Connection String
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import uuid
 from collections import defaultdict
@@ -398,7 +399,12 @@ class Channel(BaseChannel):
             headers = payload.get("headers", {})
 
             if isinstance(body, str):
-                body = body.encode(content_encoding)
+                if headers.get("body_encoding") == "base64":
+                    body = base64.b64decode(body)
+                elif content_encoding not in ("binary", "ascii-8bit"):
+                    body = body.encode(content_encoding)
+                else:
+                    body = body.encode("utf-8")
             elif isinstance(body, dict | list):
                 body = json_dumps(body).encode("utf-8")
         except (ValueError, TypeError):

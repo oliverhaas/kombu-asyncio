@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .connection import Connection
     from .message import Message
     from .messaging import Consumer, Producer
-    from .transport.redis import Channel
+    from .transport.base import Channel
 
 __all__ = (
     "Broadcast",
