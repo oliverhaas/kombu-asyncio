@@ -32,8 +32,10 @@ __all__ = (
 BaseExceptionType = TypeVar("BaseExceptionType", bound=BaseException)
 
 
-def reraise(
-    tp: type[BaseExceptionType], value: BaseExceptionType, tb: TracebackType | None = None
+def reraise[BaseExceptionType: BaseException](
+    _tp: type[BaseExceptionType],
+    value: BaseExceptionType,
+    tb: TracebackType | None = None,
 ) -> BaseExceptionType:
     """Reraise exception."""
     if value.__traceback__ is not tb:

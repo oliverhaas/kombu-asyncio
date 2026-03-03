@@ -49,6 +49,7 @@ class cached_property(_cached_property):
 
             cache = instance.__dict__
             cache[self.attrname] = value
+        return None
 
     def __delete__(self, instance):
         if instance is None:
@@ -59,6 +60,7 @@ class cached_property(_cached_property):
 
             if self.__del and value is not _NOT_FOUND:
                 self.__del(instance, value)
+        return None
 
     def setter(self, fset):
         return self.__class__(self.func, fset, self.__del)

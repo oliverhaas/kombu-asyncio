@@ -36,7 +36,7 @@ class MatcherRegistry:
         try:
             self._matchers.pop(name)
         except KeyError:
-            raise self.MatcherNotInstalled(f"No matcher installed for {name}")
+            raise self.MatcherNotInstalled(f"No matcher installed for {name}") from None
 
     def _set_default_matcher(self, name: str) -> None:
         """Set the default matching method.
@@ -51,10 +51,14 @@ class MatcherRegistry:
         try:
             self._default_matcher = self._matchers[name]
         except KeyError:
-            raise self.MatcherNotInstalled(f"No matcher installed for {name}")
+            raise self.MatcherNotInstalled(f"No matcher installed for {name}") from None
 
     def match(
-        self, data: bytes, pattern: bytes, matcher: str | None = None, matcher_kwargs: dict[str, str] | None = None
+        self,
+        data: bytes,
+        pattern: bytes,
+        matcher: str | None = None,
+        matcher_kwargs: dict[str, str] | None = None,
     ) -> bool:
         """Call the matcher."""
         if matcher and not self._matchers.get(matcher):

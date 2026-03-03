@@ -71,7 +71,7 @@ class _epoll:
     def unregister(self, fd):
         try:
             self._epoll.unregister(fd)
-        except (OSError, ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError):
             pass
         except OSError as exc:
             if getattr(exc, "errno", None) not in (errno.ENOENT, errno.EPERM):
@@ -226,7 +226,8 @@ class _poll:
                 events |= WRITE
             if event & POLLERR or event & POLLNVAL or event & POLLHUP:
                 events |= ERR
-            assert events
+            if not events:
+                raise ValueError("no events")
             if not isinstance(fd, Integral):
                 fd = fd.fileno()
             ready.append((fd, events))

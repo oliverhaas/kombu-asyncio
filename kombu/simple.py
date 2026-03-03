@@ -200,14 +200,14 @@ class SimpleQueue:
                 return self._buffer.popleft()
 
             if remaining is not None and remaining <= 0.0:
-                raise self.Empty()
+                raise self.Empty
 
             try:
                 channel = await self._ensure_channel()
                 delivered = await channel.drain_events(timeout=min(remaining or 1.0, 1.0))
                 if delivered and self._buffer:
                     return self._buffer.popleft()
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 pass  # drain_events timed out, loop and check remaining
 
             if remaining is not None:
@@ -238,7 +238,7 @@ class SimpleQueue:
         )
 
         if message is None:
-            raise self.Empty()
+            raise self.Empty
 
         return message
 

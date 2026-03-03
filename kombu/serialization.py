@@ -28,7 +28,7 @@ else:
 pickle_load = pickle.load
 
 #: We have to use protocol 4 until we drop support for Python 3.6 and 3.7.
-pickle_protocol = int(os.environ.get("PICKLE_PROTOCOL", 4))
+pickle_protocol = int(os.environ.get("PICKLE_PROTOCOL", "4"))
 
 codec = namedtuple("codec", ("content_type", "content_encoding", "encoder"))
 
@@ -129,7 +129,7 @@ class SerializerRegistry:
             self.type_to_name.pop(content_type, None)
             self.name_to_type.pop(name, None)
         except KeyError:
-            raise SerializerNotInstalled(f"No encoder/decoder installed for {name}")
+            raise SerializerNotInstalled(f"No encoder/decoder installed for {name}") from None
 
     def _set_default_serializer(self, name):
         """Set the default serialization method used by this library.
@@ -148,7 +148,7 @@ class SerializerRegistry:
         try:
             (self._default_content_type, self._default_content_encoding, self._default_encode) = self._encoders[name]
         except KeyError:
-            raise SerializerNotInstalled(f"No encoder installed for {name}")
+            raise SerializerNotInstalled(f"No encoder installed for {name}") from None
 
     def dumps(self, data, serializer=None):
         """Encode data.
@@ -303,11 +303,15 @@ def register_yaml():
         import yaml
 
         registry.register(
-            "yaml", yaml.safe_dump, yaml.safe_load, content_type="application/x-yaml", content_encoding="utf-8"
+            "yaml",
+            yaml.safe_dump,
+            yaml.safe_load,
+            content_type="application/x-yaml",
+            content_encoding="utf-8",
         )
     except ImportError:
 
-        def not_available(*args, **kwargs):
+        def not_available(*_args, **_kwargs):
             """Raise SerializerNotInstalled.
 
             Used in case a client receives a yaml message, but yaml
@@ -333,7 +337,11 @@ def register_pickle():
         return dumper(obj, protocol=pickle_protocol)
 
     registry.register(
-        "pickle", pickle_dumps, unpickle, content_type="application/x-python-serialize", content_encoding="binary"
+        "pickle",
+        pickle_dumps,
+        unpickle,
+        content_type="application/x-python-serialize",
+        content_encoding="binary",
     )
 
 
@@ -358,13 +366,13 @@ def register_msgpack():
                 return unpackb(s, raw=False)
         else:
 
-            def version_mismatch(*args, **kwargs):
+            def version_mismatch(*_args, **_kwargs):
                 raise SerializerNotInstalled("msgpack requires msgpack-python >= 0.4.0")
 
             pack = unpack = version_mismatch
     except (ImportError, ValueError):
 
-        def not_available(*args, **kwargs):
+        def not_available(*_args, **_kwargs):
             raise SerializerNotInstalled("No decoder installed for msgpack. Please install the msgpack-python library")
 
         pack = unpack = not_available
@@ -448,5 +456,5 @@ def prepare_accept_content(content_types, name_to_type=None):
         try:
             return {n if "/" in n else name_to_type[n] for n in content_types}
         except KeyError as e:
-            raise SerializerNotInstalled(f"No encoder/decoder installed for {e.args[0]}")
+            raise SerializerNotInstalled(f"No encoder/decoder installed for {e.args[0]}") from None
     return content_types

@@ -93,6 +93,7 @@ class LogMixin:
                     **kwargs,
                 )
             return self.logger.log(severity, self.annotate(" ".join(map(safe_str, args))), **kwargs)
+        return None
 
     def get_logger(self):
         return get_logger(self.logger_name)
@@ -133,7 +134,7 @@ def setup_logging(loglevel=None, logfile=None):
     """Setup logging."""
     logger = logging.getLogger()
     loglevel = get_loglevel(loglevel or "ERROR")
-    logfile = logfile if logfile else sys.__stderr__
+    logfile = logfile or sys.__stderr__
     if not logger.handlers:
         if hasattr(logfile, "write"):
             handler = logging.StreamHandler(logfile)

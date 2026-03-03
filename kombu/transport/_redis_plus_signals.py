@@ -16,7 +16,7 @@ from celery.signals import before_task_publish
 
 @before_task_publish.connect
 def _convert_eta_to_properties(
-    body: dict[str, Any],
+    _body: dict[str, Any],
     properties: dict[str, Any],
     **kwargs: Any,
 ) -> None:
@@ -27,7 +27,7 @@ def _convert_eta_to_properties(
     This signal handler bridges the two.
 
     Args:
-        body: The message body (unused).
+        _body: The message body (unused).
         properties: Message properties dict - we add 'eta' here.
         **kwargs: Additional signal arguments (headers, exchange, etc.).
     """

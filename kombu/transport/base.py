@@ -166,11 +166,13 @@ class Channel(ABC):
         """Reject a message."""
         ...
 
+    @abstractmethod
     async def basic_recover(self, requeue: bool = True) -> None:
         """Recover unacknowledged messages.
 
         Default implementation does nothing.
         """
+        ...
 
     # Async context manager support
 

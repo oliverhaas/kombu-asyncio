@@ -220,7 +220,7 @@ class ConsumerMixin:
         elapsed = 0.0
 
         async with self.consumer_context(**kwargs) as (conn, channel, consumers):
-            for i in range(limit) if limit else count():
+            for _i in range(limit) if limit else count():
                 if self.should_stop:
                     break
 

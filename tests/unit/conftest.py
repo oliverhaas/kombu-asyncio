@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from t.mocks import MockChannel, MockTransport
+from tests.mocks import MockChannel, MockTransport
 
 
 @pytest.fixture

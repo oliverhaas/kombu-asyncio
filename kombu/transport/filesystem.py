@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import os
 import re
 import shutil
 import tempfile
@@ -244,7 +243,7 @@ class Channel(BaseChannel):
         data = json_dumps([list(b) for b in bindings])
 
         def _write():
-            with open(exchange_file, "w") as f:
+            with exchange_file.open("w") as f:
                 f.write(data)
 
         await asyncio.to_thread(_write)
@@ -259,7 +258,7 @@ class Channel(BaseChannel):
             return []
 
         def _read():
-            with open(exchange_file) as f:
+            with exchange_file.open() as f:
                 return f.read()
 
         try:
@@ -276,11 +275,10 @@ class Channel(BaseChannel):
         queue_pattern = f".{queue}.msg"
 
         try:
-            for filename in os.listdir(self._data_folder_in):
-                if queue_pattern in filename:
-                    filepath = self._data_folder_in / filename
+            for entry in self._data_folder_in.iterdir():
+                if queue_pattern in entry.name:
                     try:
-                        filepath.unlink()
+                        entry.unlink()
                         count += 1
                     except OSError:
                         pass
@@ -316,8 +314,8 @@ class Channel(BaseChannel):
         queue_pattern = f".{queue}.msg"
 
         try:
-            for filename in os.listdir(self._data_folder_in):
-                if queue_pattern in filename:
+            for entry in self._data_folder_in.iterdir():
+                if queue_pattern in entry.name:
                     count += 1
         except FileNotFoundError:
             pass
@@ -395,18 +393,18 @@ class Channel(BaseChannel):
 
     async def _put_message(self, queue: str, message: bytes) -> None:
         """Write a message to the filesystem."""
-        timestamp = int(round(monotonic() * 1000))
+        timestamp = round(monotonic() * 1000)
         filename = f"{timestamp}_{uuid.uuid4()}.{queue}.msg"
         filepath = self._data_folder_out / filename
 
         def _write():
-            with open(filepath, "wb") as f:
+            with filepath.open("wb") as f:
                 f.write(message)
 
         try:
             await asyncio.to_thread(_write)
         except OSError as e:
-            raise ChannelError(f"Cannot write message to {filepath}: {e}")
+            raise ChannelError(f"Cannot write message to {filepath}: {e}") from e
 
     async def get(
         self,
@@ -418,7 +416,7 @@ class Channel(BaseChannel):
         queue_pattern = f".{queue}.msg"
 
         try:
-            files = sorted(os.listdir(self._data_folder_in))
+            files = sorted(entry.name for entry in self._data_folder_in.iterdir())
         except FileNotFoundError:
             return None
 
@@ -444,7 +442,7 @@ class Channel(BaseChannel):
                 continue
 
             def _read(path=dest_path):
-                with open(path, "rb") as f:
+                with path.open("rb") as f:
                     return f.read()
 
             try:
@@ -458,7 +456,7 @@ class Channel(BaseChannel):
 
                 return self._create_message(queue, data, no_ack, accept, processed_path)
             except OSError as e:
-                raise ChannelError(f"Cannot read message from {dest_path}: {e}")
+                raise ChannelError(f"Cannot read message from {dest_path}: {e}") from e
 
         return None
 
@@ -493,7 +491,7 @@ class Channel(BaseChannel):
             return False
 
         # Check all consumer queues
-        for tag, (queue, callback, no_ack) in self._consumers.items():
+        for queue, callback, no_ack in self._consumers.values():
             message = await self.get(queue, no_ack=no_ack)
             if message:
                 await self._deliver_message(callback, message)
@@ -609,7 +607,7 @@ class Channel(BaseChannel):
 
     async def basic_recover(self, requeue: bool = True) -> None:
         """Recover unacknowledged messages."""
-        for delivery_tag, (queue, filepath) in list(self._unacked.items()):
+        for _delivery_tag, (_queue, filepath) in list(self._unacked.items()):
             if requeue and filepath and filepath.exists():
                 dest = self._data_folder_in / filepath.name
                 shutil.move(str(filepath), str(dest))
@@ -647,10 +645,10 @@ class Transport(BaseTransport):
         """Connect (ensures directories exist)."""
         # Ensure directories exist
         for folder in [self._data_folder_in, self._data_folder_out, self._control_folder]:
-            Path(folder).mkdir(parents=True, exist_ok=True)
+            Path(folder).mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
 
         if self._store_processed:
-            Path(self._processed_folder).mkdir(parents=True, exist_ok=True)
+            Path(self._processed_folder).mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
 
         self._connected = True
         logger.debug("Filesystem transport connected")

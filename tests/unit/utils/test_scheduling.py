@@ -13,7 +13,7 @@ class MyEmpty(Exception):
 
 def consume(fun, n):
     r = []
-    for i in range(n):
+    for _i in range(n):
         r.append(fun(Mock(name="callback")))
     return r
 

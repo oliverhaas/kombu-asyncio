@@ -52,7 +52,7 @@ def symbol_by_name(name, aliases=None, imp=None, package=None, sep=".", default=
     sep = ":" if ":" in name else sep
     module_name, _, cls_name = name.rpartition(sep)
     if not module_name:
-        cls_name, module_name = None, package if package else cls_name
+        cls_name, module_name = None, package or cls_name
     try:
         try:
             module = imp(module_name, package=package, **kwargs)

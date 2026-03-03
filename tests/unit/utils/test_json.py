@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections import namedtuple
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -26,7 +26,7 @@ class test_JSONEncoder:
         _register_default_types()
 
     def test_datetime(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         original = {
             "datetime": now,
@@ -99,7 +99,7 @@ class test_JSONEncoder:
 
     def test_register_type_with_empty_marker(self):
         register_type(datetime, None, lambda o: o.isoformat(), lambda o: "should never be used")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         serialized_str = dumps({"now": now})
         deserialized_value = loads(serialized_str)
 

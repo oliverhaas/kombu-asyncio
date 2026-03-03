@@ -1,10 +1,9 @@
 """Text Utilities."""
-# flake8: noqa
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from difflib import SequenceMatcher
-from typing import Iterable, Iterator
 
 from kombu import version_info_t
 
@@ -53,13 +52,17 @@ def version_string_as_tuple(s: str) -> version_info_t:
 
 
 def _unpack_version(
-    major: str, minor: str | int = 0, micro: str | int = 0, releaselevel: str = "", serial: str = ""
+    major: str,
+    minor: str | int = 0,
+    micro: str | int = 0,
+    releaselevel: str = "",
+    serial: str = "",
 ) -> version_info_t:
     return version_info_t(int(major), int(minor), micro, releaselevel, serial)
 
 
 def _splitmicro(micro: str, releaselevel: str = "", serial: str = "") -> tuple[int, str, str]:
-    for index, char in enumerate(micro):
+    for index, char in enumerate(micro):  # noqa: B007
         if not char.isdigit():
             break
     else:

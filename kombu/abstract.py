@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import copy
-from typing import TYPE_CHECKING, Any, TypeVar
-
-from typing_extensions import Self
+from typing import TYPE_CHECKING, Any, Self, TypeVar
 
 from .connection import maybe_channel
 from .exceptions import NotBoundError
@@ -21,14 +19,13 @@ __all__ = ("MaybeChannelBound", "Object")
 
 _T = TypeVar("_T")
 _ObjectType = TypeVar("_ObjectType", bound="Object")
-_MaybeChannelBoundType = TypeVar("_MaybeChannelBoundType", bound="MaybeChannelBound")
 
 
-def unpickle_dict(cls: type[_ObjectType], kwargs: dict[str, Any]) -> _ObjectType:
+def unpickle_dict[ObjectType: "Object"](cls: type[_ObjectType], kwargs: dict[str, Any]) -> _ObjectType:
     return cls(**kwargs)
 
 
-def _any(v: _T) -> _T:
+def _any[T](v: _T) -> _T:
     return v
 
 

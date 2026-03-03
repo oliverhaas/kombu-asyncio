@@ -136,7 +136,7 @@ class LamportClock:
         """
         if h[0][0] == h[1][0]:
             same = []
-            for PN in zip(h, islice(h, 1, None)):
+            for PN in zip(h, islice(h, 1, None), strict=False):
                 if PN[0][0] != PN[1][0]:
                     break  # Prev and Next's clocks differ
                 same.append(PN[0])

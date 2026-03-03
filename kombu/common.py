@@ -232,7 +232,7 @@ async def eventloop(
     Yields:
         None after each successful drain.
     """
-    for i in range(limit) if limit else count():
+    for _i in range(limit) if limit else count():
         try:
             await conn.drain_events(timeout=timeout)
             yield
@@ -303,7 +303,7 @@ async def collect_replies(
 
 
 @asynccontextmanager
-async def ignore_errors(conn: Connection):
+async def ignore_errors(_conn: Connection):
     """Async context manager to ignore connection errors.
 
     Args:

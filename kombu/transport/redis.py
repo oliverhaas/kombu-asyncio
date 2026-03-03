@@ -44,8 +44,8 @@ try:
     import redis.asyncio as aioredis
     import redis.exceptions as redis_exc
 except ImportError:
-    aioredis = None  # type: ignore
-    redis_exc = None  # type: ignore
+    aioredis = None  # type: ignore[assignment]
+    redis_exc = None  # type: ignore[assignment]
 
 from kombu.log import get_logger
 from kombu.message import Message
@@ -147,7 +147,7 @@ def _parse_db_from_url(url: str) -> str:
     """Extract database number from Redis URL."""
     parsed = urllib.parse.urlparse(url)
     path = parsed.path.strip("/")
-    return path if path else "0"
+    return path or "0"
 
 
 # ---------------------------------------------------------------------------
@@ -606,11 +606,11 @@ class Channel:
 
         # Separate regular and fanout queues
         regular_queues: list[str] = []
-        for _tag, (q, _cb, _no_ack) in self._consumers.items():
+        for q, _cb, _no_ack in self._consumers.values():
             if q not in self.active_fanout_queues and q not in regular_queues:
                 regular_queues.append(q)
 
-        effective_timeout = timeout if timeout else 1.0
+        effective_timeout = timeout or 1.0
         tasks: list[asyncio.Task] = []
 
         if regular_queues:
@@ -754,7 +754,7 @@ class Channel:
                 for q, (exch, _) in self._fanout_queues.items():
                     fs = self._fanout_stream_key(exch)
                     unprefixed_stream = self._unprefixed(stream_key)
-                    if stream_key == fs or unprefixed_stream == fs:
+                    if fs in (stream_key, unprefixed_stream):
                         queue_name = q
                         break
                 if not queue_name:
@@ -820,7 +820,7 @@ class Channel:
         message: Message,
     ) -> None:
         """Find matching consumer and deliver message."""
-        for _tag, (q, callback, no_ack) in self._consumers.items():
+        for q, callback, no_ack in self._consumers.values():
             if q == queue:
                 if not no_ack:
                     self._delivered[message.delivery_tag] = (queue, message)

@@ -4,15 +4,15 @@ version = "6.0.0a2"
 description = "Pure asyncio messaging library for Python"
 readme = "README.md"
 license = "BSD-3-Clause"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 keywords = [
-  "messaging",
-  "asyncio",
-  "redis",
-  "queue",
   "async",
-  "python",
+  "asyncio",
   "celery",
+  "messaging",
+  "python",
+  "queue",
+  "redis",
 ]
 authors = [{ name = "Ask Solem", email = "auvipy@gmail.com" }]
 classifiers = [
@@ -23,15 +23,15 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: Implementation :: CPython",
   "Topic :: Communications",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: System :: Distributed Computing",
   "Topic :: System :: Networking",
+  "Typing :: Typed",
 ]
 dependencies = []
 
@@ -49,13 +49,16 @@ yaml = ["PyYAML>=3.10"]
 
 [dependency-groups]
 dev = [
+  "mypy==1.19.1",
   "pre-commit==4.5.1",
   "pytest==9.0.2",
   "pytest-asyncio==1.3.0",
   "pytest-cov==7.0.0",
+  "pytest-mock==3.15.1",
+  "pytest-xdist==3.8.0",
   "redis>=7.1.0",
-  "ruff==0.14.10",
-  "ty==0.0.8",
+  "ruff==0.15.2",
+  "ty==0.0.18",
 ]
 
 [build-system]
@@ -67,143 +70,105 @@ packages = ["kombu"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py312"
+fix = true
 
 [tool.ruff.lint]
-dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
-explicit-preview-rules = true
-fixable = ["ALL"]
-ignore = [
-  "A001",    # Variable shadowing builtin - legacy patterns
-  "A002",    # Argument shadowing builtin - legacy patterns
-  "ANN",     # Type annotations - legacy code not fully annotated
-  "ARG001",  # Signal handlers and overrides have required signatures
-  "ARG002",
-  "B007",    # Loop variable not used - sometimes intentional
-  "B904",    # Raise from - legacy exception handling
-  "BLE001",  # Catching blind exceptions - sometimes needed
-  "C901",    # Some functions are inherently complex
-  "COM812",  # Conflicts with ruff-format
-  "D",       # Docstring rules - existing code lacks comprehensive docstrings
-  "E5",      # 120 char limit is sufficient
-  "EM101",   # Extracting exception messages to variables hurts readability
-  "EM102",
-  "ERA001",  # Commented-out code - keeping for reference
-  "FBT001",  # Boolean traps - too many violations, breaks compatibility
-  "FBT002",
-  "FIX002",  # TODO comments - allowed
-  "N801",    # Class naming follows kombu conventions
-  "N802",    # Function naming follows kombu conventions
-  "N803",    # Argument naming follows kombu conventions
-  "N806",    # Variable naming follows kombu conventions
-  "N818",    # Exception naming follows kombu conventions
-  "PERF203", # Try-except in loop - sometimes needed
-  "PGH004",  # Legacy noqa comments
-  "PLC0415", # Lazy imports for optional dependencies
-  "PLR0913", # Too many arguments - messaging APIs need many options
-  "PLR1704", # Redefining argument in context manager
-  "PLW2901", # Redefining loop variable - sometimes intentional
-  "PTH",     # Pathlib - legacy code uses os.path
-  "PYI024",  # namedtuple usage follows kombu patterns
-  "PYI034",  # __aenter__ return type - legacy patterns
-  "RET503",  # Missing explicit return - legacy patterns
-  "RSE102",  # Unnecessary parentheses on raised exception
-  "RUF005",  # Tuple concatenation is clearer
-  "RUF012",  # Mutable class attributes - used intentionally
-  "RUF013",  # Implicit Optional - legacy patterns
-  "RUF015",  # Readability over micro-optimization
-  "RUF059",  # Keep unused variables explicit
-  "S101",    # Assert in non-test code - sometimes used
-  "S110",    # Try-except-pass - sometimes needed
-  "SIM105",  # contextlib.suppress - legacy patterns
-  "SIM108",  # Ternary operator - keep explicit if/else
-  "SIM212",  # Negated condition - keep as is
-  "SLF001",  # Private member access needed for redis-py internals
-  "T201",    # Print statements - for debugging
-  "TC003",   # Move import into TYPE_CHECKING - legacy patterns
-  "TD002",   # TODO author - not needed
-  "TD003",   # TODO issue link - not needed
-  "TRY003",  # Long exception messages are fine
-  "TRY300",  # Try-except in else - legacy patterns
-  "UP031",   # Printf-style formatting - keep for consistency
-  # Additional legacy patterns to ignore
-  "A004",    # Import shadowing builtin
-  "ARG003",  # Unused class method argument
-  "ARG005",  # Unused lambda argument
-  "B018",    # Useless expression
-  "B025",    # Duplicate exception handler
-  "B027",    # Empty method in abstract class - intentional concrete defaults
-  "B028",    # No stacklevel in warnings
-  "B905",    # Zip without strict
-  "C408",    # Unnecessary dict call
-  "DTZ005",  # Datetime without timezone
-  "E402",    # Module level import not at top
-  "EM103",   # Exception string formatting
-  "F821",    # Undefined name (usually TYPE_CHECKING)
-  "F822",    # Undefined name in __all__
-  "FIX001",  # FIXME comments
-  "FIX003",  # XXX comments
-  "G001",    # Logging string format
-  "G004",    # Logging f-string
-  "G201",    # Logging .exception with exc_info
-  "ISC002",  # Implicit string concatenation
-  "LOG014",  # Logging extra argument
-  "N804",    # First argument of classmethod
-  "N805",    # First argument of method
-  "N812",    # Lowercase imported as non-lowercase
-  "N813",    # Camelcase imported as lowercase
-  "N999",    # Invalid module name
-  "PERF102", # Dictionary keys as set
-  "PGH003",  # Type: ignore without code
-  "PLC0205", # __slots__ expected class variables
-  "PLR0912", # Too many branches
-  "PLR1714", # Consider merging comparisons
-  "PLR2004", # Magic value comparison
-  "PLW0603", # Global statement
-  "PLW1508", # Invalid envvar default
-  "PLW1641", # Object without __hash__
-  "PYI018",  # Unused TypeVar
-  "PYI036",  # Star annotation
-  "RET504",  # Unnecessary variable before return
-  "RUF003",  # Ambiguous unicode character
-  "RUF006",  # asyncio.create_task without reference
-  "RUF022",  # __all__ not sorted
-  "RUF046",  # Unnecessary cast
-  "S301",    # Pickle usage
-  "SIM101",  # Multiple isinstance calls
-  "SIM102",  # Nested if statements
-  "SIM103",  # Return bool directly
-  "SIM110",  # Use any/all
-  "SIM115",  # Open context manager
-  "SIM118",  # Dict keys iteration
-  "TD001",   # Invalid TODO tag
-  "TD004",   # Missing TODO colon
-  "TRY002",  # Raise vanilla exception
-  "TRY201",  # Use raise without exception
-  "TRY301",  # Abstract raise to inner function
-  "TRY400",  # Use logging.exception
-]
-preview = true
 select = ["ALL"]
-unfixable = []
+ignore = [
+  "A001",     # Variable shadowing builtin (type, format, etc.) — messaging API patterns
+  "A002",     # Argument shadowing builtin — messaging API naming (type, format, id)
+  "A004",     # Import shadowing builtin
+  "ANN",      # Type annotations — will add incrementally (separate task)
+  "ARG002",   # Unused args: API compat, overrides, signal handlers
+  "ASYNC109", # timeout param is message TTL, not asyncio.timeout
+  "BLE001",   # Blind except: needed for transport error handling and graceful degradation
+  "C901",     # Complex structure: some messaging functions are inherently complex
+  "COM812",   # Conflicts with ruff-format
+  "D",        # Docstrings — will add incrementally
+  "E501",     # Line length handled by config
+  "EM",       # Exception strings inline are fine
+  "FBT",      # Boolean params match messaging APIs (no_ack, auto_delete, durable, etc.)
+  "FIX002",   # TODO comments — allowed during development
+  "N801",     # Class naming: QoS, oid_from etc. follow messaging conventions
+  "N802",     # Function naming: follows messaging conventions
+  "N803",     # Argument naming: follows messaging conventions
+  "N806",     # Variable naming: follows messaging conventions
+  "N812",     # Lowercase imported as non-lowercase
+  "N818",     # Exception naming: follows kombu conventions
+  "PERF203",  # try/except in loop is fine here
+  "PLC0415",  # Dynamic imports for optional dependencies (aio-pika, redis, etc.)
+  "PLR0912",  # Too many branches: complex routing logic
+  "PLR0913",  # Too many args — messaging APIs need many options
+  "PLR1704",  # Redefining argument from local — context manager patterns
+  "PLR2004",  # Magic values like 0xFFFF are protocol constants
+  "PLW0603",  # Global statement: needed for module-level singletons
+  "PLW1641",  # eq without hash: intentional for some entity classes
+  "PLW2901",  # Redefining loop variable — sometimes intentional
+  "PYI024",   # collections.namedtuple: existing patterns
+  "PYI034",   # Non-self return type: __aenter__ patterns
+  "PYI036",   # Bad exit annotation: __aexit__ patterns
+  "RUF005",   # Tuple concatenation is clearer than unpacking
+  "RUF012",   # Mutable class defaults: intentional for transport state
+  "RUF059",   # Unused unpacked variable
+  "S110",     # Try-except-pass: needed for graceful cleanup
+  "SIM105",   # contextlib.suppress: explicit try/except is clearer
+  "SIM108",   # Ternary not always clearer
+  "SIM212",   # If-expr with twisted arms: style preference
+  "SLF001",   # Private member access needed for transport internals
+  "TC003",    # Typing-only imports: style preference
+  "TD002",    # TODO author not needed
+  "TD003",    # TODO issue link not needed
+  "TRY003",   # Long exception messages are helpful for debugging
+  "TRY300",   # return in try block is cleaner for this pattern
+]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+suppress-none-returning = true
 
 [tool.ruff.lint.per-file-ignores]
-"t/**" = [
-  "B017",    # Assert blind exception - tests sometimes need broad catches
-  "PERF401", # List comprehension vs for loop - readability in tests
-  "PLR0133", # Constant comparison - test assertions
-  "PLR0913", # Too many arguments in test fixtures
-  "PLR2004", # Magic values in tests are fine
-  "PT006",   # Parametrize tuple format - legacy tests
-  "PT011",   # pytest.raises too broad - legacy tests
+"tests/**" = [
+  "ANN",     # Type annotations not required in tests
+  "ARG",     # Unused arguments common in fixtures
+  "B017",    # assert raises broad exception — tests sometimes need this
+  "PERF401", # List comprehension vs for loop — readability in tests
+  "PLR0133", # Constant comparison — test assertions
+  "PT006",   # Parametrize tuple style is preference
+  "PT011",   # Broad pytest.raises okay in some tests
+  "PT018",   # Compound assertions okay in tests
+  "PTH",     # pathlib not required in tests
   "S101",    # assert in tests
+  "S301",    # pickle in tests is fine
+  "TRY301",  # raise within try — test patterns
 ]
 
+[tool.mypy]
+python_version = "3.12"
+pretty = true
+show_error_codes = true
+show_error_context = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_unreachable = false
+
+[[tool.mypy.overrides]]
+module = "aio_pika.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "redis.*"
+ignore_missing_imports = true
+
+[tool.ty.environment]
+python-version = "3.12"
+
 [tool.pytest.ini_options]
-testpaths = ["t/unit"]
+testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-python_classes = ["Test*", "test_*"]
+addopts = "--cov=kombu --cov-report=term-missing --cov-report=xml --no-cov-on-fail"
+xfail_strict = true
 markers = [
   "unit: marks tests as unit tests",
   "integration: marks tests as integration tests",
@@ -215,6 +180,8 @@ source = ["kombu"]
 omit = ["*/__init__.py"]
 
 [tool.coverage.report]
+precision = 2
+skip_covered = true
 exclude_lines = [
   "pragma: no cover",
   "if TYPE_CHECKING:",

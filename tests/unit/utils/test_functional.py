@@ -38,7 +38,7 @@ class test_shufflecycle:
             values = {"A", "B", "C"}
             cycle = utils.shufflecycle(values)
             seen = set()
-            for i in range(10):
+            for _i in range(10):
                 next(cycle)
             utils.repeat.assert_called_with(None)
             assert seen.issubset(values)
@@ -180,7 +180,7 @@ class test_retry_over_time:
 
     def myfun(self):
         if self.index < 9:
-            raise self.Predicate()
+            raise self.Predicate
         return 42
 
     def errback(self, exc, intervals, retries):
@@ -274,7 +274,7 @@ class test_retry_over_time:
                 try:
                     if self.calls >= 10:
                         return 42
-                    raise Predicate()
+                    raise Predicate
                 finally:
                     self.calls += 1
 

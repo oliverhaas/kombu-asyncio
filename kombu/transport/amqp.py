@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 try:
@@ -275,7 +275,7 @@ class Channel:
         if "timestamp" in properties:
             msg_kwargs["timestamp"] = datetime.fromtimestamp(
                 float(properties["timestamp"]),
-                tz=timezone.utc,
+                tz=UTC,
             )
         if "app_id" in properties:
             msg_kwargs["app_id"] = properties["app_id"]
@@ -386,7 +386,7 @@ class Channel:
                 self._message_queue.get(),
                 timeout=timeout,
             )
-        except (asyncio.TimeoutError, TimeoutError):
+        except TimeoutError:
             return False
 
         await self._deliver_to_consumer(queue_name, message)
@@ -394,7 +394,7 @@ class Channel:
 
     async def _deliver_to_consumer(self, queue: str, message: Message) -> None:
         """Route a message to the matching consumer callback."""
-        for _tag, (q, callback, _no_ack) in self._consumers.items():
+        for q, callback, _no_ack in self._consumers.values():
             if q == queue:
                 try:
                     body = message.decode()

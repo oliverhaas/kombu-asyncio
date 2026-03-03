@@ -5,17 +5,17 @@ All aio-pika objects are mocked — no RabbitMQ broker required.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import aio_pika
-import aio_pika.abc
 import pytest
 
-from kombu.entity import Exchange, Queue
-from kombu.message import Message
-from kombu.transport.amqp import Channel, Transport, _get_exchange_type
+aio_pika = pytest.importorskip("aio_pika")
+
+from kombu.entity import Exchange, Queue  # noqa: E402
+from kombu.message import Message  # noqa: E402
+from kombu.transport.amqp import Channel, Transport, _get_exchange_type  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -602,7 +602,7 @@ class TestChannelPublish:
         await channel.publish(envelope, exchange="", routing_key="q")
 
         aio_msg = aio_channel.default_exchange.publish.call_args[0][0]
-        expected_ts = datetime.fromtimestamp(1700000000.0, tz=timezone.utc)
+        expected_ts = datetime.fromtimestamp(1700000000.0, tz=UTC)
         assert aio_msg.timestamp == expected_ts
 
     async def test_publish_with_app_id_and_type(self, channel, aio_channel):
@@ -1073,7 +1073,7 @@ class TestChannelConvertMessage:
         assert msg.delivery_info == {"exchange": "", "routing_key": ""}
 
     def test_timestamp_app_id_type_mapped(self, channel):
-        ts = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        ts = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
         incoming = _make_incoming_message(
             delivery_tag=1,
             timestamp=ts,

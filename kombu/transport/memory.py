@@ -314,7 +314,7 @@ class Channel(BaseChannel):
             return False
 
         # Check all consumer queues
-        for tag, (queue, callback, no_ack) in self._consumers.items():
+        for queue, callback, no_ack in self._consumers.values():
             q = self._get_queue(queue)
             try:
                 # Try non-blocking first
@@ -326,7 +326,7 @@ class Channel(BaseChannel):
                 continue
 
         # No messages available, wait with timeout
-        effective_timeout = timeout if timeout else 1.0
+        effective_timeout = timeout or 1.0
         # Capture consumer list once — dict could change during await below
         consumer_list = list(self._consumers.values())
         queues = [self._get_queue(q) for q, _, _ in consumer_list]
@@ -459,7 +459,7 @@ class Channel(BaseChannel):
     async def basic_recover(self, requeue: bool = True) -> None:
         """Recover unacknowledged messages."""
         if requeue:
-            for delivery_tag, (queue, data) in list(self._unacked.items()):
+            for _delivery_tag, (queue, data) in list(self._unacked.items()):
                 await self._get_queue(queue).put(data)
         self._unacked.clear()
 

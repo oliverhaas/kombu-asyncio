@@ -29,7 +29,7 @@ def get_default_encoding_file():
 
 if sys.platform.startswith("java"):  # pragma: no cover
 
-    def default_encoding(file=None):
+    def default_encoding(_file=None):
         """Get default encoding."""
         return "utf-8"
 else:
@@ -54,7 +54,7 @@ def bytes_to_str(s):
     return s
 
 
-def from_utf8(s, *args, **kwargs):
+def from_utf8(s, *_args, **_kwargs):
     """Get str from utf-8 encoding."""
     return s
 
@@ -79,7 +79,7 @@ def safe_str(s, errors="replace"):
     return _safe_str(s, errors)
 
 
-def _safe_str(s, errors="replace", file=None):
+def _safe_str(s, _errors="replace", _file=None):
     if isinstance(s, str):
         return s
     try:

@@ -41,47 +41,46 @@ version_info_t = namedtuple(
 _temp = cast("re.Match", re.match(r"(\d+)\.(\d+).(\d+)(.+)?", __version__)).groups()
 VERSION = version_info = version_info_t(int(_temp[0]), int(_temp[1]), int(_temp[2]), _temp[3] or "", "")
 del _temp
-del re
 
 # Public API exports
-from .common import Broadcast, eventloop, maybe_declare
-from .connection import Connection
-from .entity import Exchange, Queue, binding
-from .message import Message
-from .messaging import Consumer, Producer
-from .mixins import ConsumerMixin, ConsumerProducerMixin
-from .serialization import (
+from .common import Broadcast, eventloop, maybe_declare  # noqa: E402
+from .connection import Connection  # noqa: E402
+from .entity import Exchange, Queue, binding  # noqa: E402
+from .message import Message  # noqa: E402
+from .messaging import Consumer, Producer  # noqa: E402
+from .mixins import ConsumerMixin, ConsumerProducerMixin  # noqa: E402
+from .serialization import (  # noqa: E402
     disable_insecure_serializers,
     enable_insecure_serializers,
 )
-from .simple import SimpleBuffer, SimpleQueue
+from .simple import SimpleBuffer, SimpleQueue  # noqa: E402
 
 __all__ = (
+    # Version
+    "VERSION",
+    "Broadcast",
     # Connection
     "Connection",
-    # Entities
-    "Exchange",
-    "Queue",
-    "binding",
-    "Broadcast",
-    # Message
-    "Message",
-    # Messaging
-    "Producer",
     "Consumer",
     # Mixins
     "ConsumerMixin",
     "ConsumerProducerMixin",
+    # Entities
+    "Exchange",
+    # Message
+    "Message",
+    # Messaging
+    "Producer",
+    "Queue",
+    "SimpleBuffer",
     # Simple API
     "SimpleQueue",
-    "SimpleBuffer",
+    "binding",
+    "disable_insecure_serializers",
+    # Serialization
+    "enable_insecure_serializers",
     # Utilities
     "eventloop",
     "maybe_declare",
-    # Serialization
-    "enable_insecure_serializers",
-    "disable_insecure_serializers",
-    # Version
-    "VERSION",
     "version_info",
 )

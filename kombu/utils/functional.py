@@ -345,6 +345,7 @@ def retry_over_time(
                     sleep(1.0)
                 # sleep remainder after int truncation above.
                 sleep(abs(int(tts) - tts))
+    return None
 
 
 def reprkwargs(kwargs, sep=", ", fmt="{0}={1}"):

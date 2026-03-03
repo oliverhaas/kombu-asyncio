@@ -48,7 +48,8 @@ class FairCycle:
             except IndexError:
                 self.pos = 0
                 if not self.resources:
-                    raise self.predicate()
+                    raise self.predicate() from None
+        return None
 
     def get(self, callback, **kwargs):
         """Get from next resource."""
@@ -60,6 +61,7 @@ class FairCycle:
                 # reraise when retries exhausted.
                 if tried >= len(self.resources) - 1:
                     raise
+        return None
 
     def close(self):
         """Close cycle."""

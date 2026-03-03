@@ -66,9 +66,9 @@ class Node:
     def Consumer(self, channel=None, no_ack=True, accept=None, **options):
         queue = self.mailbox.get_queue(self.hostname)
 
-        def verify_exclusive(name, messages, consumers):
+        def verify_exclusive(_name, _messages, consumers):
             if consumers:
-                warnings.warn(W_PIDBOX_IN_USE.format(node=self))
+                warnings.warn(W_PIDBOX_IN_USE.format(node=self), stacklevel=2)
 
         queue.on_declared = verify_exclusive
 
@@ -150,6 +150,7 @@ class Node:
             run_dispatch = True
         if run_dispatch:
             return await self.dispatch(**body)
+        return None
 
     dispatch_from_message = handle_message
 
@@ -400,6 +401,7 @@ class Mailbox:
                 callback=callback,
                 channel=channel,
             )
+        return None
 
     async def _collect(self, ticket, limit=None, timeout=1, callback=None, channel=None, accept=None):
         if accept is None:

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
     from kombu.entity import Exchange, Queue
 
-__all__ = ("MockChannel", "MockTransport", "ContextMock")
+__all__ = ("ContextMock", "MockChannel", "MockTransport")
 
 
 class _ContextMock(Mock):
@@ -96,7 +96,7 @@ class MockChannel(BaseChannel):
             return
         self._closed = True
         # Requeue unacked
-        for delivery_tag, (queue_name, data) in self._unacked.items():
+        for queue_name, data in self._unacked.values():
             await self._get_queue(queue_name).put(data)
         self._unacked.clear()
         self._consumers.clear()
@@ -289,7 +289,7 @@ class MockChannel(BaseChannel):
                     data = await asyncio.wait_for(q.get(), timeout=timeout)
                 else:
                     data = q.get_nowait()
-            except (asyncio.QueueEmpty, TimeoutError, asyncio.TimeoutError):
+            except (asyncio.QueueEmpty, TimeoutError):
                 continue
 
             delivery_tag = self._next_delivery_tag()

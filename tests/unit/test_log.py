@@ -60,7 +60,7 @@ class test_LogMixin:
         self.logger.log.assert_called_with(logging.WARNING, "Log - warning")
 
     def test_error(self):
-        self.log.error("error", exc_info="exc")
+        self.log.error("error")
         self.logger.log.assert_called_with(
             logging.ERROR,
             "Log - error",
@@ -68,7 +68,7 @@ class test_LogMixin:
         )
 
     def test_critical(self):
-        self.log.critical("crit", exc_info="exc")
+        self.log.critical("crit")
         self.logger.log.assert_called_with(
             logging.CRITICAL,
             "Log - crit",

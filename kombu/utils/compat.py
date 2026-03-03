@@ -75,14 +75,7 @@ def detect_environment():
 
 def entrypoints(namespace):
     """Return setuptools entrypoints for namespace."""
-    if sys.version_info >= (3, 10):
-        entry_points = importlib_metadata.entry_points(group=namespace)
-    else:
-        entry_points = importlib_metadata.entry_points()
-        try:
-            entry_points = entry_points.get(namespace, [])
-        except AttributeError:
-            entry_points = entry_points.select(group=namespace)
+    entry_points = importlib_metadata.entry_points(group=namespace)
 
     return ((ep, ep.load()) for ep in entry_points)
 
@@ -105,7 +98,6 @@ def maybe_fileno(f):
 @contextmanager
 def nested(*managers):  # pragma: no cover
     """Nest context managers."""
-    # flake8: noqa
     exits = []
     vars = []
     exc = (None, None, None)
@@ -117,7 +109,7 @@ def nested(*managers):  # pragma: no cover
                 vars.append(enter())
                 exits.append(exit)
             yield vars
-        except:
+        except:  # noqa: E722
             exc = sys.exc_info()
         finally:
             while exits:
@@ -125,7 +117,7 @@ def nested(*managers):  # pragma: no cover
                 try:
                     if exit(*exc):
                         exc = (None, None, None)
-                except:
+                except:  # noqa: E722
                     exc = sys.exc_info()
             if exc != (None, None, None):
                 # Don't rely on sys.exc_info() still containing

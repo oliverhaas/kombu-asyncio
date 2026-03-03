@@ -1,5 +1,5 @@
 """URL Utilities."""
-# flake8: noqa
+# ruff: noqa: TID252, SIM118, ARG001
 
 from __future__ import annotations
 
@@ -126,5 +126,4 @@ def parse_ssl_cert_reqs(query_value):
             "none": ssl.CERT_NONE,
         }
         return query_value_to_constant[query_value]
-    else:
-        return None
+    return None

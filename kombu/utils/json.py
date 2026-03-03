@@ -87,7 +87,7 @@ T = TypeVar("T")
 EncodedT = TypeVar("EncodedT")
 
 
-def register_type(
+def register_type[T, EncodedT](
     t: type[T],
     marker: str | None,
     encoder: Callable[[T], EncodedT],
