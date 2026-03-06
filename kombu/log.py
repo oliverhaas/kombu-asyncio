@@ -1,7 +1,5 @@
 """Logging Utilities."""
 
-from __future__ import annotations
-
 import logging
 import numbers
 import os

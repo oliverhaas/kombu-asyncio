@@ -4,8 +4,6 @@ All transports inherit from these base classes and implement
 the async methods for their specific backend.
 """
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 

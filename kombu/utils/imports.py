@@ -1,7 +1,5 @@
 """Import related utilities."""
 
-from __future__ import annotations
-
 import importlib
 import sys
 
@@ -59,7 +57,7 @@ def symbol_by_name(name, aliases=None, imp=None, package=None, sep=".", default=
         except ValueError as exc:
             reraise(ValueError, ValueError(f"Couldn't import {name!r}: {exc}"), sys.exc_info()[2])
         return getattr(module, cls_name) if cls_name else module
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         if default is None:
             raise
     return default

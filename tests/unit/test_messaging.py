@@ -1,7 +1,5 @@
 """Tests for kombu.messaging - async Producer and Consumer."""
 
-from __future__ import annotations
-
 from kombu import Connection, Exchange, Queue
 from kombu.messaging import Consumer, Producer
 

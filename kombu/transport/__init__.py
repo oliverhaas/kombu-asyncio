@@ -6,8 +6,6 @@ Currently supported transports:
 - filesystem: File-system based transport using aiofiles
 """
 
-from __future__ import annotations
-
 from .filesystem import Transport as FilesystemTransport
 from .memory import Transport as MemoryTransport
 from .redis import Transport as RedisTransport

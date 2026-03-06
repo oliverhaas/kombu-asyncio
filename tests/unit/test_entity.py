@@ -1,7 +1,5 @@
 """Tests for kombu.entity - Exchange, Queue, binding."""
 
-from __future__ import annotations
-
 from kombu.entity import (
     PERSISTENT_DELIVERY_MODE,
     TRANSIENT_DELIVERY_MODE,

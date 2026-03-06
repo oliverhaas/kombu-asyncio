@@ -1,7 +1,5 @@
 """Message class for pure asyncio Kombu."""
 
-from __future__ import annotations
-
 import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -16,7 +14,6 @@ if TYPE_CHECKING:
 __all__ = ("Message",)
 
 ACK_STATES = {"ACK", "REJECTED", "REQUEUED"}
-IS_PYPY = hasattr(sys, "pypy_version_info")
 
 
 class Message:
@@ -39,21 +36,20 @@ class Message:
 
     errors: list | None = None
 
-    if not IS_PYPY:  # pragma: no cover
-        __slots__ = (
-            "__dict__",
-            "_decoded_cache",
-            "_state",
-            "accept",
-            "body",
-            "channel",
-            "content_encoding",
-            "content_type",
-            "delivery_info",
-            "delivery_tag",
-            "headers",
-            "properties",
-        )
+    __slots__ = (
+        "__dict__",
+        "_decoded_cache",
+        "_state",
+        "accept",
+        "body",
+        "channel",
+        "content_encoding",
+        "content_type",
+        "delivery_info",
+        "delivery_tag",
+        "headers",
+        "properties",
+    )
 
     def __init__(
         self,

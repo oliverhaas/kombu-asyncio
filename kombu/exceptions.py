@@ -1,7 +1,5 @@
 """Exceptions."""
 
-from __future__ import annotations
-
 from socket import timeout as TimeoutError
 from types import TracebackType
 from typing import TypeVar

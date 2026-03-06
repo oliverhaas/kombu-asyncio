@@ -1,7 +1,5 @@
 """Exchange and Queue declarations for pure asyncio Kombu."""
 
-from __future__ import annotations
-
 import numbers
 from typing import TYPE_CHECKING, Any
 

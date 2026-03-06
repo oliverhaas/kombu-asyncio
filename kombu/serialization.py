@@ -1,7 +1,5 @@
 """Serialization utilities."""
 
-from __future__ import annotations
-
 import codecs
 import os
 import pickle
@@ -18,17 +16,11 @@ __all__ = ("dumps", "loads", "pickle", "register", "unregister")
 SKIP_DECODE = frozenset(["binary", "ascii-8bit"])
 TRUSTED_CONTENT = frozenset(["application/data", "application/text"])
 
-if sys.platform.startswith("java"):  # pragma: no cover
-
-    def _decode(t, coding):
-        return codecs.getdecoder(coding)(t)[0]
-else:
-    _decode = codecs.decode
+_decode = codecs.decode
 
 pickle_load = pickle.load
 
-#: We have to use protocol 4 until we drop support for Python 3.6 and 3.7.
-pickle_protocol = int(os.environ.get("PICKLE_PROTOCOL", "4"))
+pickle_protocol = int(os.environ.get("PICKLE_PROTOCOL", "5"))
 
 codec = namedtuple("codec", ("content_type", "content_encoding", "encoder"))
 
@@ -370,7 +362,7 @@ def register_msgpack():
                 raise SerializerNotInstalled("msgpack requires msgpack-python >= 0.4.0")
 
             pack = unpack = version_mismatch
-    except (ImportError, ValueError):
+    except ImportError, ValueError:
 
         def not_available(*_args, **_kwargs):
             raise SerializerNotInstalled("No decoder installed for msgpack. Please install the msgpack-python library")

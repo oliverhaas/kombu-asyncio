@@ -1,7 +1,5 @@
 """Sending and receiving messages - Pure asyncio implementation."""
 
-from __future__ import annotations
-
 import asyncio
 import base64
 from collections.abc import Callable
@@ -168,7 +166,7 @@ class Producer:
         if isinstance(serialized_body, bytes):
             try:
                 body_str = serialized_body.decode(content_encoding or "utf-8")
-            except (UnicodeDecodeError, LookupError):
+            except UnicodeDecodeError, LookupError:
                 # Binary serializers (pickle, msgpack) produce non-UTF-8 bytes
                 body_str = base64.b64encode(serialized_body).decode("ascii")
                 if headers is None:

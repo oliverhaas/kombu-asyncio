@@ -5,8 +5,6 @@ applications without crashing from the infamous
 :exc:`UnicodeDecodeError` exception.
 """
 
-from __future__ import annotations
-
 import sys
 import traceback
 

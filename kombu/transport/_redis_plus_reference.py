@@ -29,8 +29,6 @@ Transport Options
   or a dict with SSL options (e.g., ``{'ssl_cert_reqs': ssl.CERT_REQUIRED}``)
 """
 
-from __future__ import annotations
-
 import functools
 import numbers
 import socket as socket_module

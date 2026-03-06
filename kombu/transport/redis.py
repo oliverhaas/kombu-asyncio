@@ -29,8 +29,6 @@ Transport Options
 * ``max_connections``: Maximum connections in pool
 """
 
-from __future__ import annotations
-
 import asyncio
 import base64
 import re
@@ -448,7 +446,7 @@ class Channel:
                 try:
                     data = json_loads(member)
                     bindings.append((data["queue"], data.get("routing_key", "")))
-                except (ValueError, KeyError):
+                except ValueError, KeyError:
                     pass
         return bindings
 
@@ -494,7 +492,7 @@ class Channel:
         # Parse envelope
         try:
             payload = json_loads(raw_message)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             payload = {
                 "body": raw_message.decode("utf-8", errors="replace")
                 if isinstance(raw_message, bytes)
@@ -641,7 +639,7 @@ class Channel:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError, Exception:
                 pass
 
         for task in done:
@@ -1073,7 +1071,7 @@ class Channel:
                 task.cancel()
                 try:
                     await task
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError, Exception:
                     pass
 
         # Requeue unacked messages
@@ -1213,5 +1211,5 @@ class Transport(BaseTransport):
             import redis
 
             return redis.__version__
-        except (ImportError, AttributeError):
+        except ImportError, AttributeError:
             return "N/A"

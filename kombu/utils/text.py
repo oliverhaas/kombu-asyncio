@@ -1,7 +1,5 @@
 """Text Utilities."""
 
-from __future__ import annotations
-
 from collections.abc import Iterable, Iterator
 from difflib import SequenceMatcher
 

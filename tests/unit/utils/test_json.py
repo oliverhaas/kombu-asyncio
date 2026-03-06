@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import uuid
 from collections import namedtuple
 from dataclasses import dataclass

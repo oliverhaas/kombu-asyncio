@@ -18,8 +18,6 @@ Transport Options
 * ``heartbeat``: AMQP heartbeat interval in seconds
 """
 
-from __future__ import annotations
-
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta

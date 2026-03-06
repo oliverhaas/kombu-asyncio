@@ -5,8 +5,6 @@ the base ABC from kombu.transport.base, useful for unit testing
 without requiring a real broker.
 """
 
-from __future__ import annotations
-
 import asyncio
 import re
 import uuid
@@ -289,7 +287,7 @@ class MockChannel(BaseChannel):
                     data = await asyncio.wait_for(q.get(), timeout=timeout)
                 else:
                     data = q.get_nowait()
-            except (asyncio.QueueEmpty, TimeoutError):
+            except asyncio.QueueEmpty, TimeoutError:
                 continue
 
             delivery_tag = self._next_delivery_tag()

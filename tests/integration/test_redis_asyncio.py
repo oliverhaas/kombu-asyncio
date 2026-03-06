@@ -1,7 +1,5 @@
 """Integration tests for pure asyncio Redis transport."""
 
-from __future__ import annotations
-
 import asyncio
 
 import pytest

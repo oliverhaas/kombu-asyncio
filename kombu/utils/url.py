@@ -1,21 +1,15 @@
 """URL Utilities."""
 # ruff: noqa: TID252, SIM118, ARG001
 
-from __future__ import annotations
-
+import ssl
 from collections.abc import Mapping
 from functools import partial
 from typing import NamedTuple
 from urllib.parse import parse_qsl, quote, unquote, urlparse
 
-try:
-    import ssl
-
-    ssl_available = True
-except ImportError:  # pragma: no cover
-    ssl_available = False
-
 from ..log import get_logger
+
+ssl_available = True
 
 safequote = partial(quote, safe="")
 logger = get_logger(__name__)

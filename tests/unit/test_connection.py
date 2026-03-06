@@ -1,7 +1,5 @@
 """Tests for kombu.connection - async Connection."""
 
-from __future__ import annotations
-
 import pytest
 
 from kombu import Connection

@@ -1,7 +1,5 @@
 """Debugging support."""
 
-from __future__ import annotations
-
 import logging
 from functools import wraps
 from typing import TYPE_CHECKING

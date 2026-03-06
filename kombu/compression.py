@@ -1,7 +1,7 @@
 """Compression utilities."""
 
-from __future__ import annotations
-
+import bz2
+import lzma
 import zlib
 
 from kombu.utils.encoding import ensure_bytes
@@ -80,12 +80,7 @@ def decompress(body, content_type):
 
 register(zlib.compress, zlib.decompress, "application/x-gzip", aliases=["gzip", "zlib"])
 
-try:
-    import bz2
-except ImportError:  # pragma: no cover
-    pass  # No bz2 support
-else:
-    register(bz2.compress, bz2.decompress, "application/x-bz2", aliases=["bzip2", "bzip"])
+register(bz2.compress, bz2.decompress, "application/x-bz2", aliases=["bzip2", "bzip"])
 
 try:
     import brotli
@@ -94,12 +89,7 @@ except ImportError:  # pragma: no cover
 else:
     register(brotli.compress, brotli.decompress, "application/x-brotli", aliases=["brotli"])
 
-try:
-    import lzma
-except ImportError:  # pragma: no cover
-    pass  # no lzma support
-else:
-    register(lzma.compress, lzma.decompress, "application/x-lzma", aliases=["lzma", "xz"])
+register(lzma.compress, lzma.decompress, "application/x-lzma", aliases=["lzma", "xz"])
 
 try:
     import zstandard as zstd

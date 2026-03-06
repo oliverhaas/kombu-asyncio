@@ -1,7 +1,5 @@
 """Pytest configuration for kombu-asyncio unit tests."""
 
-from __future__ import annotations
-
 import pytest
 
 from tests.mocks import MockChannel, MockTransport

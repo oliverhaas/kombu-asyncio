@@ -1,7 +1,5 @@
 """Custom maps, sequences, etc."""
 
-from __future__ import annotations
-
 
 class HashedSeq(list):
     """Hashed Sequence.

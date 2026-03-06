@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from unittest import mock
 
 from kombu.utils.objects import cached_property

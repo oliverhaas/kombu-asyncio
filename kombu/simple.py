@@ -1,7 +1,5 @@
 """Simple messaging interface - Pure asyncio implementation."""
 
-from __future__ import annotations
-
 import asyncio
 from collections import deque
 from queue import Empty

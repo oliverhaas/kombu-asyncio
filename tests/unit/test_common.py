@@ -1,7 +1,5 @@
 """Tests for kombu.common - common utilities."""
 
-from __future__ import annotations
-
 import pytest
 
 from kombu import Connection, Exchange, Queue

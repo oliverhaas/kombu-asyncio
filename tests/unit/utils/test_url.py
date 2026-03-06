@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 try:
     from urllib.parse import urlencode
 except ImportError:

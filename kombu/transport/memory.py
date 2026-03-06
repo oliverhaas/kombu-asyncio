@@ -19,8 +19,6 @@ Connection String
     memory://
 """
 
-from __future__ import annotations
-
 import asyncio
 import base64
 import re
@@ -407,7 +405,7 @@ class Channel(BaseChannel):
                     body = body.encode("utf-8")
             elif isinstance(body, dict | list):
                 body = json_dumps(body).encode("utf-8")
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             body = data
             content_type = "application/data"
             content_encoding = "binary"

@@ -1,7 +1,5 @@
 """Time Utilities."""
 
-from __future__ import annotations
-
 __all__ = ("maybe_s_to_ms",)
 
 

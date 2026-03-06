@@ -6,8 +6,6 @@ Celery's eta (ISO datetime string in headers) to properties.eta
 (Unix timestamp float) for the transport layer.
 """
 
-from __future__ import annotations
-
 from datetime import UTC, datetime
 from typing import Any
 

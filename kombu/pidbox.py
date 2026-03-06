@@ -1,7 +1,5 @@
 """Generic process mailbox - async implementation."""
 
-from __future__ import annotations
-
 import socket
 import warnings
 from collections import defaultdict, deque

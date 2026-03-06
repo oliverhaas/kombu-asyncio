@@ -1,7 +1,5 @@
 """Tests for kombu.simple - SimpleQueue and SimpleBuffer."""
 
-from __future__ import annotations
-
 import pytest
 
 from kombu import Connection

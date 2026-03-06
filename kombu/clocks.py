@@ -1,7 +1,5 @@
 """Logical Clocks and Synchronization."""
 
-from __future__ import annotations
-
 from itertools import islice
 from operator import itemgetter
 from threading import Lock

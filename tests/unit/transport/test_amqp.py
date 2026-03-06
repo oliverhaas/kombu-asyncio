@@ -3,8 +3,6 @@
 All aio-pika objects are mocked — no RabbitMQ broker required.
 """
 
-from __future__ import annotations
-
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
