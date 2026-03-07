@@ -45,3 +45,7 @@ def maybe_fileno(f):
         return fileno(f)
     except FILENO_ERRORS:
         pass
+
+
+# No-op in asyncio mode (no forking)
+register_after_fork = None
