@@ -80,6 +80,7 @@ def _make_incoming_message(
     timestamp: datetime | None = None,
     app_id: str | None = None,
     type: str | None = None,
+    redelivered: bool = False,
 ) -> MagicMock:
     """Create a mock aio-pika IncomingMessage."""
     msg = MagicMock(spec=aio_pika.abc.AbstractIncomingMessage)
@@ -99,6 +100,7 @@ def _make_incoming_message(
     msg.timestamp = timestamp
     msg.app_id = app_id
     msg.type = type
+    msg.redelivered = redelivered
     msg.ack = AsyncMock()
     msg.reject = AsyncMock()
     return msg
@@ -169,6 +171,9 @@ class TestChannelInit:
 
     def test_wraps_aio_channel(self, channel, aio_channel):
         assert channel._aio_channel is aio_channel
+
+    def test_message_queue_is_bounded(self, channel):
+        assert channel._message_queue.maxsize == 1000
 
 
 class TestChannelClose:
@@ -843,6 +848,34 @@ class TestChannelDrainEvents:
         # delivery_tag_map should track it for ack
         assert "99" in channel._delivery_tag_map
 
+    async def test_on_incoming_includes_consumer_tag(self, channel):
+        """Internal callback passes consumer_tag to _convert_message."""
+        aio_q = _make_aio_queue("q1")
+        channel._declared_queues["q1"] = aio_q
+
+        await channel.basic_consume("q1", MagicMock(), consumer_tag="my-ctag", no_ack=False)
+
+        internal_callback = aio_q.consume.call_args[1]["callback"]
+        incoming = _make_incoming_message(delivery_tag=77)
+        await internal_callback(incoming)
+
+        _queue_name, kombu_msg = channel._message_queue.get_nowait()
+        assert kombu_msg.delivery_info["consumer_tag"] == "my-ctag"
+
+    async def test_on_incoming_includes_redelivered(self, channel):
+        """Internal callback preserves redelivered flag."""
+        aio_q = _make_aio_queue("q1")
+        channel._declared_queues["q1"] = aio_q
+
+        await channel.basic_consume("q1", MagicMock(), consumer_tag="tag1", no_ack=True)
+
+        internal_callback = aio_q.consume.call_args[1]["callback"]
+        incoming = _make_incoming_message(delivery_tag=88, redelivered=True)
+        await internal_callback(incoming)
+
+        _queue_name, kombu_msg = channel._message_queue.get_nowait()
+        assert kombu_msg.delivery_info["redelivered"] is True
+
     async def test_on_incoming_no_ack_not_tracked(self, channel):
         """no_ack messages should not be added to _delivery_tag_map."""
         aio_q = _make_aio_queue("q1")
@@ -979,6 +1012,24 @@ class TestChannelAckReject:
 
         underlying.basic_recover.assert_awaited_once_with(requeue=False)
 
+    async def test_basic_recover_no_basic_recover_method(self, channel, aio_channel):
+        """Underlying channel exists but has no basic_recover method."""
+        underlying = MagicMock(spec=[])  # empty spec — no basic_recover
+        aio_channel.channel = underlying
+
+        # Should not raise
+        await channel.basic_recover(requeue=True)
+
+    async def test_basic_qos(self, channel, aio_channel):
+        await channel.basic_qos(prefetch_count=10)
+
+        aio_channel.set_qos.assert_awaited_once_with(prefetch_count=10)
+
+    async def test_basic_qos_unlimited(self, channel, aio_channel):
+        await channel.basic_qos(prefetch_count=0)
+
+        aio_channel.set_qos.assert_awaited_once_with(prefetch_count=0)
+
 
 class TestChannelConvertMessage:
     def test_basic_conversion(self, channel):
@@ -998,7 +1049,11 @@ class TestChannelConvertMessage:
         assert msg.delivery_tag == "42"
         assert msg.content_type == "text/plain"
         assert msg.content_encoding == "ascii"
-        assert msg.delivery_info == {"exchange": "my_ex", "routing_key": "my_rk"}
+        assert msg.delivery_info["exchange"] == "my_ex"
+        assert msg.delivery_info["routing_key"] == "my_rk"
+        assert msg.delivery_info["delivery_tag"] == "42"
+        assert msg.delivery_info["consumer_tag"] == ""
+        assert msg.delivery_info["redelivered"] is False
         assert msg.channel is channel
 
     def test_all_properties_mapped(self, channel):
@@ -1068,7 +1123,8 @@ class TestChannelConvertMessage:
 
         msg = channel._convert_message(incoming, "q1", "1")
 
-        assert msg.delivery_info == {"exchange": "", "routing_key": ""}
+        assert msg.delivery_info["exchange"] == ""
+        assert msg.delivery_info["routing_key"] == ""
 
     def test_timestamp_app_id_type_mapped(self, channel):
         ts = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
@@ -1106,6 +1162,34 @@ class TestChannelConvertMessage:
         msg = channel._convert_message(incoming, "q1", "1")
 
         assert msg.headers == {}
+
+    def test_consumer_tag_in_delivery_info(self, channel):
+        incoming = _make_incoming_message()
+
+        msg = channel._convert_message(incoming, "q1", "1", consumer_tag="my-consumer")
+
+        assert msg.delivery_info["consumer_tag"] == "my-consumer"
+
+    def test_redelivered_true(self, channel):
+        incoming = _make_incoming_message(redelivered=True)
+
+        msg = channel._convert_message(incoming, "q1", "1")
+
+        assert msg.delivery_info["redelivered"] is True
+
+    def test_redelivered_false_by_default(self, channel):
+        incoming = _make_incoming_message()
+
+        msg = channel._convert_message(incoming, "q1", "1")
+
+        assert msg.delivery_info["redelivered"] is False
+
+    def test_delivery_tag_in_delivery_info(self, channel):
+        incoming = _make_incoming_message(delivery_tag=42)
+
+        msg = channel._convert_message(incoming, "q1", "42")
+
+        assert msg.delivery_info["delivery_tag"] == "42"
 
 
 class TestChannelContextManager:
@@ -1147,7 +1231,9 @@ class TestTransport:
         from aiormq import exceptions as aiormq_exc
 
         assert ConnectionRefusedError in Transport.connection_errors
+        assert ConnectionResetError in Transport.connection_errors
         assert TimeoutError in Transport.connection_errors
+        assert OSError in Transport.connection_errors
         assert aiormq_exc.AMQPConnectionError in Transport.connection_errors
         assert aiormq_exc.AMQPChannelError in Transport.channel_errors
 

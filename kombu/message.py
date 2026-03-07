@@ -62,7 +62,7 @@ class Message:
         headers: dict | None = None,
         postencode: str | None = None,
         accept: set[str] | None = None,
-        channel: "Channel | None" = None,
+        channel: "Channel | None" = None,  # noqa: UP037
         **kwargs: Any,
     ):
         delivery_info = {} if not delivery_info else delivery_info

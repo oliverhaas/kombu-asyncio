@@ -54,7 +54,9 @@ if aio_pika is not None:
     _amqp_connection_errors: tuple[type[Exception], ...] = (
         ConnectionError,
         ConnectionRefusedError,
+        ConnectionResetError,
         TimeoutError,
+        OSError,
         aiormq_exc.AMQPConnectionError,
     )
     _amqp_channel_errors: tuple[type[Exception], ...] = (aiormq_exc.AMQPChannelError,)
@@ -102,8 +104,11 @@ class Channel:
         self._declared_exchanges: dict[str, aio_pika.abc.AbstractExchange] = {}
         self._declared_queues: dict[str, aio_pika.abc.AbstractQueue] = {}
 
-        # Incoming message buffer for drain_events
-        self._message_queue: asyncio.Queue[tuple[str, Message]] = asyncio.Queue()
+        # Incoming message buffer for drain_events.
+        # Bounded to prevent unbounded memory growth when the consumer
+        # is slower than the broker. aio-pika will apply TCP backpressure
+        # when the queue is full.
+        self._message_queue: asyncio.Queue[tuple[str, Message]] = asyncio.Queue(maxsize=1000)
 
         # delivery_tag bridging: str(amqp_int_tag) -> aio-pika IncomingMessage
         self._delivery_tag_map: dict[str, aio_pika.abc.AbstractIncomingMessage] = {}
@@ -343,11 +348,13 @@ class Channel:
             queue_name = queue  # capture for closure
             _no_ack = no_ack
 
+            _consumer_tag = consumer_tag  # capture for closure
+
             async def _on_incoming(incoming: aio_pika.abc.AbstractIncomingMessage) -> None:
                 tag = str(incoming.delivery_tag)
                 if not _no_ack:
                     self._delivery_tag_map[tag] = incoming
-                msg = self._convert_message(incoming, queue_name, tag)
+                msg = self._convert_message(incoming, queue_name, tag, consumer_tag=_consumer_tag)
                 await self._message_queue.put((queue_name, msg))
 
             await aio_queue.consume(
@@ -416,12 +423,34 @@ class Channel:
         if incoming:
             await incoming.reject(requeue=requeue)
 
+    async def basic_qos(self, prefetch_count: int = 0) -> None:
+        """Set Quality of Service (prefetch count) on the channel.
+
+        Args:
+            prefetch_count: Number of unacknowledged messages the broker
+                will deliver before waiting. 0 means unlimited.
+        """
+        await self._aio_channel.set_qos(prefetch_count=prefetch_count)
+
     async def basic_recover(self, requeue: bool = True) -> None:
-        # aio-pika doesn't expose basic.recover directly;
-        # use the underlying aiormq channel if available
+        """Request the broker to redeliver all unacknowledged messages.
+
+        aio-pika doesn't expose basic.recover directly, so we use the
+        underlying aiormq channel's basic_recover method.
+
+        Args:
+            requeue: If True (default), the broker requeues messages so
+                they may be delivered to other consumers. If False, they
+                are redelivered to this consumer.
+        """
         underlying = getattr(self._aio_channel, "channel", None)
-        if underlying and hasattr(underlying, "basic_recover"):
-            await underlying.basic_recover(requeue=requeue)
+        if underlying is None:
+            logger.warning("Cannot recover: no underlying aiormq channel available")
+            return
+        if not hasattr(underlying, "basic_recover"):
+            logger.warning("Cannot recover: aiormq channel does not support basic_recover")
+            return
+        await underlying.basic_recover(requeue=requeue)
 
     # ---- message conversion ------------------------------------------------
 
@@ -430,6 +459,7 @@ class Channel:
         incoming: aio_pika.abc.AbstractIncomingMessage,
         queue: str,
         delivery_tag: str,
+        consumer_tag: str = "",
     ) -> Message:
         """Convert an aio-pika IncomingMessage to a kombu Message."""
         properties: dict[str, Any] = {"delivery_tag": delivery_tag}
@@ -461,6 +491,9 @@ class Channel:
             delivery_info={
                 "exchange": incoming.exchange or "",
                 "routing_key": incoming.routing_key or "",
+                "delivery_tag": delivery_tag,
+                "consumer_tag": consumer_tag,
+                "redelivered": getattr(incoming, "redelivered", False),
             },
             properties=properties,
             headers=dict(incoming.headers) if incoming.headers else {},
