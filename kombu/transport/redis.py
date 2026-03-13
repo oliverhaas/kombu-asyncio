@@ -6,6 +6,9 @@ This transport uses redis.asyncio for all operations and provides:
 3. Native delayed delivery — delay integrated into sorted set scoring
 4. Per-message hash storage — reliability and visibility tracking
 5. Global key prefixing — multi-tenant support
+6. FAST/SLOW consume mode — atomic Lua script with BZMPOP fallback
+7. Atomic ack — Lua script for ZREM+DEL atomicity
+8. Restore count tracking — max_restore_count enforcement
 
 Requires Redis 7.0+ for BZMPOP support.
 
@@ -23,6 +26,8 @@ Transport Options
 * ``message_ttl``: TTL for per-message hashes in seconds (-1 = no TTL)
 * ``stream_maxlen``: Maximum stream length for fanout streams (default: 10000)
 * ``fanout_prefix``: Prefix for fanout stream keys (default: '/{db}.')
+* ``max_restore_count``: Max times a message can be restored before being dropped (None = no limit)
+* ``credential_provider``: A redis CredentialProvider instance or dotted import path
 * ``socket_timeout``: Socket timeout in seconds
 * ``socket_connect_timeout``: Socket connection timeout in seconds
 * ``health_check_interval``: Health check interval for connections
@@ -82,6 +87,7 @@ DEFAULT_REQUEUE_CHECK_INTERVAL = 60
 DEFAULT_REQUEUE_BATCH_LIMIT = 1000
 DEFAULT_MESSAGE_TTL = -1
 MIN_QUEUE_EXPIRES = 10_000
+DEFAULT_MAX_RESTORE_COUNT: int | None = None
 
 DEFAULT_EXCHANGE = ""
 DEFAULT_FANOUT_PREFIX = "/{db}."
@@ -96,6 +102,8 @@ BINDING_SEP = "\x06\x16"
 _PACKAGE_DIR = Path(__file__).parent
 _ENQUEUE_DUE_MESSAGES_LUA = (_PACKAGE_DIR / "transport_enqueue_due_messages.lua").read_text()
 _REQUEUE_MESSAGE_LUA = (_PACKAGE_DIR / "transport_requeue_message.lua").read_text()
+_CONSUME_MESSAGE_LUA = (_PACKAGE_DIR / "transport_consume_message.lua").read_text()
+_ACK_MESSAGE_LUA = (_PACKAGE_DIR / "transport_ack_message.lua").read_text()
 
 # ---------------------------------------------------------------------------
 # Redis error tuples
@@ -158,6 +166,10 @@ class Channel:
 
     Each channel manages its own consumers, message delivery, and
     background tasks for visibility heartbeat and delayed enqueue.
+
+    Supports FAST/SLOW consume mode:
+    - FAST: atomic Lua script (ZPOPMIN + ZADD index + HMGET) — non-blocking
+    - SLOW: blocking BZMPOP fallback when queues are empty
     """
 
     _warned_expires_clamp = False
@@ -201,6 +213,10 @@ class Channel:
         )
         self._message_ttl: int = opts.get("message_ttl", DEFAULT_MESSAGE_TTL)
         self._stream_maxlen: int = opts.get("stream_maxlen", DEFAULT_STREAM_MAXLEN)
+        self._max_restore_count: int | None = opts.get(
+            "max_restore_count",
+            DEFAULT_MAX_RESTORE_COUNT,
+        )
 
         # Fanout prefix: True → default, False → none, str → custom
         fanout_prefix = opts.get("fanout_prefix", True)
@@ -211,6 +227,9 @@ class Channel:
         else:
             self._fanout_prefix = ""
 
+        # FAST/SLOW consume mode
+        self._consume_fast_mode: bool = True
+
         # Periodic task handles
         self._enqueue_task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
@@ -219,6 +238,8 @@ class Channel:
         # Lua script handles (registered lazily)
         self._enqueue_script = None
         self._requeue_script = None
+        self._consume_script = None
+        self._ack_script = None
 
     # ---- key helpers -------------------------------------------------------
 
@@ -281,6 +302,20 @@ class Channel:
             )
         return self._requeue_script
 
+    async def _get_consume_script(self):
+        if self._consume_script is None:
+            self._consume_script = self.client.register_script(
+                _CONSUME_MESSAGE_LUA,
+            )
+        return self._consume_script
+
+    async def _get_ack_script(self):
+        if self._ack_script is None:
+            self._ack_script = self.client.register_script(
+                _ACK_MESSAGE_LUA,
+            )
+        return self._ack_script
+
     # ---- exchange operations -----------------------------------------------
 
     async def declare_exchange(self, exchange: Exchange) -> None:
@@ -313,7 +348,7 @@ class Channel:
             if x_expires < MIN_QUEUE_EXPIRES:
                 if not self._warned_expires_clamp:
                     logger.warning(
-                        "x-expires %dms is below minimum %dms (30s), clamping."
+                        "x-expires %dms is below minimum %dms (10s), clamping."
                         " This warning is shown once; other queues may also"
                         " be affected.",
                         x_expires,
@@ -377,9 +412,28 @@ class Channel:
         await self.client.srem(self._binding_key(exchange), binding_data)
 
     async def queue_purge(self, queue: str) -> int:
+        """Purge all messages from a queue, cleaning up message hashes."""
         queue_key = self._queue_key(queue)
+        index_key = self._messages_index_key(queue)
         size = await self.client.zcard(queue_key)
-        await self.client.delete(queue_key)
+
+        # Collect delivery tags from both queue and index to clean up message hashes.
+        # Index may have tags not in queue (native delayed messages waiting for delivery).
+        tags: set[str] = set()
+        raw_queue_tags = await self.client.zrange(queue_key, 0, -1)
+        for t in raw_queue_tags:
+            tags.add(t.decode() if isinstance(t, bytes) else t)
+        raw_index_tags = await self.client.zrange(index_key, 0, -1)
+        for t in raw_index_tags:
+            tags.add(t.decode() if isinstance(t, bytes) else t)
+
+        async with self.client.pipeline(transaction=False) as pipe:
+            await pipe.delete(queue_key)
+            await pipe.delete(index_key)
+            for tag in tags:
+                await pipe.delete(self._message_key(tag))
+            await pipe.execute()
+
         return size
 
     async def queue_delete(
@@ -396,9 +450,22 @@ class Channel:
                 return 0
 
         size = await self.client.zcard(queue_key)
+        index_key = self._messages_index_key(queue)
+
+        # Collect delivery tags from both queue and index to clean up message hashes
+        tags: set[str] = set()
+        raw_queue_tags = await self.client.zrange(queue_key, 0, -1)
+        for t in raw_queue_tags:
+            tags.add(t.decode() if isinstance(t, bytes) else t)
+        raw_index_tags = await self.client.zrange(index_key, 0, -1)
+        for t in raw_index_tags:
+            tags.add(t.decode() if isinstance(t, bytes) else t)
+
         async with self.client.pipeline(transaction=False) as pipe:
             await pipe.delete(queue_key)
-            await pipe.delete(self._messages_index_key(queue))
+            await pipe.delete(index_key)
+            for tag in tags:
+                await pipe.delete(self._message_key(tag))
             await pipe.execute()
 
         self._expires.pop(queue, None)
@@ -446,7 +513,7 @@ class Channel:
                 try:
                     data = json_loads(member)
                     bindings.append((data["queue"], data.get("routing_key", "")))
-                except ValueError, KeyError:
+                except (ValueError, KeyError):  # fmt: skip
                     pass
         return bindings
 
@@ -492,7 +559,7 @@ class Channel:
         # Parse envelope
         try:
             payload = json_loads(raw_message)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):  # fmt: skip
             payload = {
                 "body": raw_message.decode("utf-8", errors="replace")
                 if isinstance(raw_message, bytes)
@@ -516,7 +583,12 @@ class Channel:
         visible_at = eta_timestamp if is_native_delayed else now
 
         queue_score = _queue_score(priority, visible_at)
-        queue_at = eta_timestamp if is_native_delayed else now + self._visibility_timeout
+        # queue_at = time when enqueue_due_messages will pick up this message.
+        # Adding RCI ensures the message won't be restored prematurely before
+        # the next enqueue cycle runs.
+        queue_at = (
+            eta_timestamp if is_native_delayed else now + self._visibility_timeout + DEFAULT_REQUEUE_CHECK_INTERVAL
+        )
 
         message_key = self._message_key(delivery_tag)
         index_key = self._messages_index_key(queue)
@@ -533,6 +605,7 @@ class Channel:
                     "redelivered": 0,
                     "native_delayed": 1 if is_native_delayed else 0,
                     "eta": eta_timestamp or 0,
+                    "restore_count": 0,
                 },
             )
 
@@ -595,7 +668,7 @@ class Channel:
         if self.no_ack_consumers is not None:
             self.no_ack_consumers.discard(consumer_tag)
 
-    # ---- drain_events ------------------------------------------------------
+    # ---- drain_events (FAST/SLOW consume) ----------------------------------
 
     async def drain_events(self, timeout: float | None = None) -> bool:
         if not self._consumers:
@@ -614,7 +687,7 @@ class Channel:
         if regular_queues:
             tasks.append(
                 asyncio.ensure_future(
-                    self._bzmpop_wait(regular_queues, effective_timeout),
+                    self._consume_regular(regular_queues, effective_timeout),
                 ),
             )
         if self.active_fanout_queues:
@@ -639,7 +712,7 @@ class Channel:
             task.cancel()
             try:
                 await task
-            except asyncio.CancelledError, Exception:
+            except (asyncio.CancelledError, Exception):  # fmt: skip
                 pass
 
         for task in done:
@@ -650,8 +723,63 @@ class Channel:
                 pass
         return False
 
-    async def _bzmpop_wait(self, queues: list[str], timeout: float) -> bool:
-        """Wait for a message from sorted set queues using BZMPOP."""
+    async def _consume_regular(self, queues: list[str], timeout: float) -> bool:
+        """Consume from regular queues using FAST/SLOW mode.
+
+        FAST: atomic Lua script (ZPOPMIN + ZADD index + HMGET) — non-blocking
+        SLOW: blocking BZMPOP fallback when FAST returns nil (all queues empty)
+        """
+        if self._consume_fast_mode:
+            result = await self._fast_consume(queues)
+            if result:
+                return True
+            # FAST returned nil — all queues empty, switch to SLOW
+            self._consume_fast_mode = False
+
+        # SLOW mode: blocking BZMPOP
+        delivered = await self._slow_consume(queues, timeout)
+        if delivered:
+            self._consume_fast_mode = True  # Switch back to FAST
+        return delivered
+
+    async def _fast_consume(self, queues: list[str]) -> bool:
+        """FAST mode: atomic Lua script for non-blocking consume."""
+        queue_keys = [self._queue_key(q) for q in queues]
+        new_queue_at = time() + self._visibility_timeout + DEFAULT_REQUEUE_CHECK_INTERVAL
+
+        try:
+            script = await self._get_consume_script()
+            result = await script(
+                keys=queue_keys,
+                args=[
+                    self._global_keyprefix,
+                    MESSAGE_KEY_PREFIX,
+                    str(new_queue_at),
+                    MESSAGES_INDEX_PREFIX,
+                    *queues,
+                ],
+            )
+        except Exception as exc:
+            logger.debug("FAST consume error: %s", exc)
+            return False
+
+        if not result:
+            return False
+
+        queue_name, delivery_tag, payload_json, restore_count = self._parse_consume_result(result)
+        payload = json_loads(payload_json)
+
+        # Inject x-restore-count header if message was restored
+        if restore_count > 0:
+            headers = payload.setdefault("headers", {})
+            headers["x-restore-count"] = restore_count
+
+        message = self._create_message(queue_name, payload, delivery_tag)
+        await self._deliver_to_consumer(queue_name, message)
+        return True
+
+    async def _slow_consume(self, queues: list[str], timeout: float) -> bool:
+        """SLOW mode: blocking BZMPOP with pipeline index refresh + HMGET."""
         queue_keys = [self._queue_key(q) for q in queues]
 
         try:
@@ -670,26 +798,48 @@ class Channel:
 
         queue_key_raw, members = result
         queue_key = queue_key_raw.decode() if isinstance(queue_key_raw, bytes) else queue_key_raw
-        # Strip prefix + QUEUE_KEY_PREFIX → logical queue name
         queue_key = self._unprefixed(queue_key)
         queue = queue_key.removeprefix(QUEUE_KEY_PREFIX)
 
         delivery_tag_raw, _score = members[0]
         delivery_tag = delivery_tag_raw.decode() if isinstance(delivery_tag_raw, bytes) else delivery_tag_raw
 
-        # Fetch payload from per-message hash
+        # Pipeline: refresh index + fetch payload and restore_count
         message_key = self._message_key(delivery_tag)
-        payload_json = await self.client.hget(message_key, "payload")
+        index_key = self._messages_index_key(queue)
+        new_queue_at = time() + self._visibility_timeout + DEFAULT_REQUEUE_CHECK_INTERVAL
 
+        async with self.client.pipeline(transaction=False) as pipe:
+            await pipe.zadd(index_key, {delivery_tag: new_queue_at}, xx=True)
+            await pipe.hmget(message_key, "payload", "restore_count")
+            results = await pipe.execute()
+
+        payload_json = results[1][0]
         if not payload_json:
-            # Hash expired — clean up index, try next
-            await self.client.zrem(self._messages_index_key(queue), delivery_tag)
+            # Hash expired — clean up index, try drain
+            await self.client.zrem(index_key, delivery_tag)
             return await self._drain_expired_and_deliver(queue)
 
         payload = json_loads(payload_json)
+        restore_count = int(results[1][1] or 0)
+        if restore_count > 0:
+            headers = payload.setdefault("headers", {})
+            headers["x-restore-count"] = restore_count
+
         message = self._create_message(queue, payload, delivery_tag)
         await self._deliver_to_consumer(queue, message)
         return True
+
+    def _parse_consume_result(self, result: list) -> tuple[str, str, str, int]:
+        """Parse the result from consume_message Lua script.
+
+        Returns (queue_name, delivery_tag, payload_json, restore_count).
+        """
+        queue_name = result[0].decode() if isinstance(result[0], bytes) else result[0]
+        delivery_tag = result[1].decode() if isinstance(result[1], bytes) else result[1]
+        payload_json = result[2].decode() if isinstance(result[2], bytes) else result[2]
+        restore_count = int(result[3] or 0)
+        return queue_name, delivery_tag, payload_json, restore_count
 
     async def _drain_expired_and_deliver(self, queue: str) -> bool:
         """Pop messages until a valid one is found or queue is empty."""
@@ -701,9 +851,14 @@ class Channel:
             delivery_tag_raw, _score = result[0]
             delivery_tag = delivery_tag_raw.decode() if isinstance(delivery_tag_raw, bytes) else delivery_tag_raw
             message_key = self._message_key(delivery_tag)
-            payload_json = await self.client.hget(message_key, "payload")
-            if payload_json:
-                payload = json_loads(payload_json)
+
+            fields = await self.client.hmget(message_key, "payload", "restore_count")
+            if fields[0]:
+                payload = json_loads(fields[0])
+                restore_count = int(fields[1] or 0)
+                if restore_count > 0:
+                    headers = payload.setdefault("headers", {})
+                    headers["x-restore-count"] = restore_count
                 message = self._create_message(queue, payload, delivery_tag)
                 await self._deliver_to_consumer(queue, message)
                 return True
@@ -844,10 +999,15 @@ class Channel:
         entry = self._delivered.pop(delivery_tag, None)
         if entry:
             queue, _ = entry
-            async with self.client.pipeline(transaction=False) as pipe:
-                await pipe.zrem(self._messages_index_key(queue), delivery_tag)
-                await pipe.delete(self._message_key(delivery_tag))
-                await pipe.execute()
+            # Atomic ack via Lua script (ZREM + DEL in one round-trip)
+            script = await self._get_ack_script()
+            await script(
+                keys=[
+                    self._messages_index_key(queue),
+                    self._message_key(delivery_tag),
+                ],
+                args=[delivery_tag],
+            )
 
     async def basic_reject(
         self,
@@ -865,13 +1025,15 @@ class Channel:
             if requeue:
                 await self._requeue_by_tag(delivery_tag, leftmost=True)
             else:
-                async with self.client.pipeline(transaction=False) as pipe:
-                    await pipe.zrem(
+                # Atomic remove via Lua script
+                script = await self._get_ack_script()
+                await script(
+                    keys=[
                         self._messages_index_key(queue),
-                        delivery_tag,
-                    )
-                    await pipe.delete(self._message_key(delivery_tag))
-                    await pipe.execute()
+                        self._message_key(delivery_tag),
+                    ],
+                    args=[delivery_tag],
+                )
 
     async def basic_recover(self, requeue: bool = True) -> None:
         if requeue:
@@ -889,7 +1051,8 @@ class Channel:
         """Requeue a rejected message to its queue using Lua script.
 
         The Lua script atomically reads the routing_key (queue) from the message
-        hash and adds the message back to that queue. Sets the redelivered flag.
+        hash, adds the message back to that queue with NX flag, and updates
+        the messages_index with a new queue_at score.
         """
         message_key = self._message_key(delivery_tag)
 
@@ -902,7 +1065,9 @@ class Channel:
                 self._message_ttl,
                 self._global_keyprefix,
                 QUEUE_KEY_PREFIX,
-                delivery_tag,
+                MESSAGE_KEY_PREFIX,
+                self._visibility_timeout,
+                MESSAGES_INDEX_PREFIX,
             ],
         )
         return bool(result)
@@ -973,20 +1138,27 @@ class Channel:
                 self._periodic_refresh_expires(),
             )
 
-    async def _enqueue_due_messages(self) -> int:
-        """Run Lua script to enqueue messages whose queue_at has passed."""
+    async def _enqueue_due_messages(self) -> tuple[int, int]:
+        """Run Lua script to enqueue messages whose queue_at has passed.
+
+        Returns (total_enqueued, total_dropped).
+        """
         active_queues = list({q for q, _, _ in self._consumers.values() if q not in self.active_fanout_queues})
         if not active_queues:
-            return 0
+            return 0, 0
 
         now = time()
         threshold = now + DEFAULT_REQUEUE_CHECK_INTERVAL
-        total = 0
+        total_enqueued = 0
+        total_dropped = 0
         script = await self._get_enqueue_script()
+
+        # Compute max_restore_count arg (-1 = no limit)
+        max_rc = -1 if self._max_restore_count is None else self._max_restore_count
 
         for queue in active_queues:
             index_key = self._messages_index_key(queue)
-            count = await script(
+            result = await script(
                 keys=[index_key],
                 args=[
                     threshold,
@@ -996,22 +1168,31 @@ class Channel:
                     MESSAGE_KEY_PREFIX,
                     self._global_keyprefix,
                     QUEUE_KEY_PREFIX,
+                    max_rc,
                 ],
             )
-            total += count or 0
+            if result:
+                total_enqueued += int(result[0])
+                total_dropped += int(result[1])
 
-        if total >= DEFAULT_REQUEUE_BATCH_LIMIT:
+        if total_enqueued >= DEFAULT_REQUEUE_BATCH_LIMIT:
             logger.warning(
                 "Enqueue hit batch limit %d. More messages may be waiting.",
                 DEFAULT_REQUEUE_BATCH_LIMIT,
             )
-        return total
+        if total_dropped > 0:
+            logger.warning(
+                "Dropped %d messages exceeding max_restore_count=%s.",
+                total_dropped,
+                self._max_restore_count,
+            )
+        return total_enqueued, total_dropped
 
     async def _update_messages_index(self) -> None:
         """Update scores of delivered messages to prevent premature requeue."""
         if not self._delivered:
             return
-        queue_at = time() + self._visibility_timeout
+        queue_at = time() + self._visibility_timeout + DEFAULT_REQUEUE_CHECK_INTERVAL
         async with self.client.pipeline(transaction=False) as pipe:
             for tag, (queue, _) in list(self._delivered.items()):
                 if tag not in self._fanout_tags:
@@ -1038,27 +1219,39 @@ class Channel:
         no_ack: bool = False,
         accept: AbstractSet[str] | None = None,
     ) -> Message | None:
-        """Non-blocking single message fetch via ZPOPMIN."""
+        """Non-blocking single message fetch via atomic consume Lua script."""
         queue_key = self._queue_key(queue)
-        while True:
-            result = await self.client.zpopmin(queue_key, count=1)
-            if not result:
-                return None
-            delivery_tag_raw, _score = result[0]
-            delivery_tag = delivery_tag_raw.decode() if isinstance(delivery_tag_raw, bytes) else delivery_tag_raw
-            message_key = self._message_key(delivery_tag)
-            payload_json = await self.client.hget(message_key, "payload")
-            if payload_json:
-                payload = json_loads(payload_json)
-                message = self._create_message(queue, payload, delivery_tag)
-                if not no_ack:
-                    self._delivered[delivery_tag] = (queue, message)
-                return message
-            # Expired — clean up and try next
-            await self.client.zrem(
-                self._messages_index_key(queue),
-                delivery_tag,
+        new_queue_at = time() + self._visibility_timeout + DEFAULT_REQUEUE_CHECK_INTERVAL
+
+        try:
+            script = await self._get_consume_script()
+            result = await script(
+                keys=[queue_key],
+                args=[
+                    self._global_keyprefix,
+                    MESSAGE_KEY_PREFIX,
+                    str(new_queue_at),
+                    MESSAGES_INDEX_PREFIX,
+                    queue,
+                ],
             )
+        except Exception:
+            logger.debug("Consume script error in get()", exc_info=True)
+            result = None
+
+        if not result:
+            return None
+
+        queue_name, delivery_tag, payload_json, restore_count = self._parse_consume_result(result)
+        payload = json_loads(payload_json)
+        if restore_count > 0:
+            headers = payload.setdefault("headers", {})
+            headers["x-restore-count"] = restore_count
+
+        message = self._create_message(queue_name, payload, delivery_tag)
+        if not no_ack:
+            self._delivered[delivery_tag] = (queue_name, message)
+        return message
 
     async def close(self) -> None:
         if self._closed:
@@ -1071,7 +1264,7 @@ class Channel:
                 task.cancel()
                 try:
                     await task
-                except asyncio.CancelledError, Exception:
+                except (asyncio.CancelledError, Exception):  # fmt: skip
                     pass
 
         # Requeue unacked messages
@@ -1147,22 +1340,62 @@ class Transport(BaseTransport):
         self._connected = False
         self._db = _parse_db_from_url(url)
 
-    def _client_kwargs(self) -> dict[str, Any]:
-        """Filter transport-only options from client kwargs."""
-        transport_only = {
+    #: Transport-only options that should not be forwarded to the Redis client
+    _TRANSPORT_ONLY_OPTIONS = frozenset(
+        {
             "global_keyprefix",
             "visibility_timeout",
             "message_ttl",
             "stream_maxlen",
             "fanout_prefix",
-        }
-        return {k: v for k, v in self._options.items() if k not in transport_only}
+            "max_restore_count",
+            "credential_provider",
+        },
+    )
+
+    def _client_kwargs(self) -> dict[str, Any]:
+        """Filter transport-only options from client kwargs."""
+        return {k: v for k, v in self._options.items() if k not in self._TRANSPORT_ONLY_OPTIONS}
+
+    def _process_credential_provider(self) -> dict[str, Any]:
+        """Process credential_provider option and return extra kwargs for Redis client.
+
+        Accepts a CredentialProvider instance or a dotted import path string.
+        When set, returns credential_provider kwarg (username/password in URL
+        are still used by from_url but credential_provider takes precedence).
+        """
+        credential_provider = self._options.get("credential_provider")
+        if credential_provider is None:
+            return {}
+
+        if isinstance(credential_provider, str):
+            # Import dotted path
+            from kombu.utils.imports import symbol_by_name
+
+            credential_provider_cls = symbol_by_name(credential_provider)
+            credential_provider = credential_provider_cls()
+
+        # Validate if redis.credentials.CredentialProvider is available
+        try:
+            from redis.credentials import CredentialProvider
+        except ImportError:
+            CredentialProvider = None  # type: ignore[assignment, misc]
+
+        if CredentialProvider is not None and not isinstance(credential_provider, CredentialProvider):
+            raise ValueError(
+                "credential_provider must be an instance of "
+                f"{CredentialProvider.__module__}.CredentialProvider (or a subclass)",
+            )
+
+        return {"credential_provider": credential_provider}
 
     async def connect(self) -> None:
         if self._connected:
             return
 
         client_kw = self._client_kwargs()
+        cred_kw = self._process_credential_provider()
+        client_kw.update(cred_kw)
 
         self._client = aioredis.from_url(
             self._url,
@@ -1211,5 +1444,5 @@ class Transport(BaseTransport):
             import redis
 
             return redis.__version__
-        except ImportError, AttributeError:
+        except (ImportError, AttributeError):  # fmt: skip
             return "N/A"
