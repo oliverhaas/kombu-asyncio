@@ -3,6 +3,7 @@
 All Redis operations are mocked — no Redis server required.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from kombu.transport.redis import (
     MESSAGE_KEY_PREFIX,
     MESSAGES_INDEX_PREFIX,
     MIN_QUEUE_EXPIRES,
+    QUEUE_KEY_PREFIX,
     Channel,
     Transport,
     _parse_db_from_url,
@@ -1050,12 +1052,1210 @@ class TestLoadBindings:
         assert bindings == [("q1", "rk1")]
 
 
-# Cleanup helper that was referenced but not defined
-class _CapturingPipeline:
-    """Not used anymore, kept for compat."""
+# ---------------------------------------------------------------------------
+# basic_consume / basic_cancel
+# ---------------------------------------------------------------------------
 
-    async def __aenter__(self):
-        return AsyncMock()
 
-    async def __aexit__(self, *a):
-        pass
+class TestBasicConsume:
+    async def test_basic_consume_returns_tag(self):
+        ch = _make_channel()
+        ch._start_periodic_tasks = MagicMock()
+        tag = await ch.basic_consume("q1", MagicMock(), no_ack=False)
+        assert tag in ch._consumers
+        assert ch._consumers[tag][0] == "q1"
+
+    async def test_basic_consume_custom_tag(self):
+        ch = _make_channel()
+        ch._start_periodic_tasks = MagicMock()
+        tag = await ch.basic_consume("q1", MagicMock(), consumer_tag="my-tag")
+        assert tag == "my-tag"
+        assert "my-tag" in ch._consumers
+
+    async def test_basic_consume_no_ack_tracked(self):
+        ch = _make_channel()
+        ch._start_periodic_tasks = MagicMock()
+        tag = await ch.basic_consume("q1", MagicMock(), no_ack=True)
+        assert tag in ch.no_ack_consumers
+
+    async def test_basic_consume_fanout_queue(self):
+        ch = _make_channel()
+        ch._start_periodic_tasks = MagicMock()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+
+        await ch.basic_consume("fq1", MagicMock())
+        assert "fq1" in ch.active_fanout_queues
+        assert ch._fanout_to_queue["fanout_ex"] == "fq1"
+
+    async def test_basic_consume_starts_periodic_tasks(self):
+        ch = _make_channel()
+        ch._start_periodic_tasks = MagicMock()
+        await ch.basic_consume("q1", MagicMock())
+        ch._start_periodic_tasks.assert_called_once()
+
+    async def test_basic_cancel_removes_consumer(self):
+        ch = _make_channel()
+        ch._start_periodic_tasks = MagicMock()
+        tag = await ch.basic_consume("q1", MagicMock())
+        await ch.basic_cancel(tag)
+        assert tag not in ch._consumers
+
+    async def test_basic_cancel_removes_no_ack(self):
+        ch = _make_channel()
+        ch._start_periodic_tasks = MagicMock()
+        tag = await ch.basic_consume("q1", MagicMock(), no_ack=True)
+        assert tag in ch.no_ack_consumers
+        await ch.basic_cancel(tag)
+        assert tag not in ch.no_ack_consumers
+
+    async def test_basic_cancel_cleans_fanout(self):
+        ch = _make_channel()
+        ch._start_periodic_tasks = MagicMock()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+
+        tag = await ch.basic_consume("fq1", MagicMock())
+        assert "fq1" in ch.active_fanout_queues
+        assert "fanout_ex" in ch._fanout_to_queue
+
+        await ch.basic_cancel(tag)
+        assert "fq1" not in ch.active_fanout_queues
+        assert "fanout_ex" not in ch._fanout_to_queue
+
+    async def test_basic_cancel_nonexistent_tag(self):
+        ch = _make_channel()
+        # Should not raise
+        await ch.basic_cancel("nonexistent-tag")
+
+
+# ---------------------------------------------------------------------------
+# _xread_wait (fanout consumption)
+# ---------------------------------------------------------------------------
+
+
+class TestXreadWait:
+    async def test_xread_wait_no_streams(self):
+        ch = _make_channel()
+        # No active fanout queues → no streams → False
+        result = await ch._xread_wait(1.0)
+        assert result is False
+
+    async def test_xread_wait_empty_result(self):
+        ch = _make_channel()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+
+        ch._transport._subclient.xread = AsyncMock(return_value=None)
+        result = await ch._xread_wait(1.0)
+        assert result is False
+
+    async def test_xread_wait_delivers_message(self):
+        ch = _make_channel()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("fq1", cb, True)
+
+        stream_key = ch._fanout_stream_key("fanout_ex")
+        payload = '{"body": "fanout_msg", "properties": {}, "headers": {}}'
+        ch._transport._subclient.xread = AsyncMock(
+            return_value=[
+                (
+                    stream_key.encode(),
+                    [(b"1234-0", {b"uuid": b"abc", b"payload": payload.encode()})],
+                ),
+            ],
+        )
+
+        result = await ch._xread_wait(1.0)
+        assert result is True
+        cb.assert_called_once()
+
+        # Check message was created correctly
+        msg = cb.call_args[0][1]
+        assert msg.delivery_tag in ch._fanout_tags
+
+    async def test_xread_wait_updates_stream_offset(self):
+        ch = _make_channel()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+        ch._consumers["tag1"] = ("fq1", MagicMock(), True)
+
+        stream_key = ch._fanout_stream_key("fanout_ex")
+        payload = '{"body": "test", "properties": {}, "headers": {}}'
+        ch._transport._subclient.xread = AsyncMock(
+            return_value=[
+                (
+                    stream_key.encode(),
+                    [(b"5678-0", {b"payload": payload.encode()})],
+                ),
+            ],
+        )
+
+        await ch._xread_wait(1.0)
+        assert ch._stream_offsets[stream_key] == "5678-0"
+
+    async def test_xread_wait_uses_last_offset(self):
+        ch = _make_channel()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+
+        stream_key = ch._fanout_stream_key("fanout_ex")
+        ch._stream_offsets[stream_key] = "9999-0"
+
+        ch._transport._subclient.xread = AsyncMock(return_value=None)
+        await ch._xread_wait(1.0)
+
+        # Should pass the stored offset, not "$"
+        call_args = ch._transport._subclient.xread.call_args
+        streams_arg = call_args[0][0]
+        assert streams_arg[stream_key] == "9999-0"
+
+    async def test_xread_wait_xread_exception(self):
+        ch = _make_channel()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+
+        ch._transport._subclient.xread = AsyncMock(side_effect=ConnectionError("lost"))
+        result = await ch._xread_wait(1.0)
+        assert result is False
+
+    async def test_xread_wait_missing_payload_skips(self):
+        ch = _make_channel()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+        ch._consumers["tag1"] = ("fq1", MagicMock(), True)
+
+        stream_key = ch._fanout_stream_key("fanout_ex")
+        # Message with no "payload" field
+        ch._transport._subclient.xread = AsyncMock(
+            return_value=[
+                (
+                    stream_key.encode(),
+                    [(b"1111-0", {b"uuid": b"abc"})],
+                ),
+            ],
+        )
+
+        result = await ch._xread_wait(1.0)
+        assert result is False
+
+    async def test_xread_wait_unmatched_stream_skips(self):
+        ch = _make_channel()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+
+        # Return a stream key that doesn't match any registered fanout queue
+        ch._transport._subclient.xread = AsyncMock(
+            return_value=[
+                (
+                    b"unknown_stream_key",
+                    [(b"1111-0", {b"payload": b'{"body":"x","properties":{},"headers":{}}'})],
+                ),
+            ],
+        )
+
+        result = await ch._xread_wait(1.0)
+        assert result is False
+
+    async def test_xread_wait_with_global_prefix(self):
+        ch = _make_channel(global_keyprefix="myapp:")
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+        ch._consumers["tag1"] = ("fq1", MagicMock(), True)
+
+        stream_key = ch._fanout_stream_key("fanout_ex")
+        payload = '{"body": "prefixed", "properties": {}, "headers": {}}'
+        ch._transport._subclient.xread = AsyncMock(
+            return_value=[
+                (
+                    stream_key.encode(),
+                    [(b"2222-0", {b"payload": payload.encode()})],
+                ),
+            ],
+        )
+
+        result = await ch._xread_wait(1.0)
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# _drain_expired_and_deliver
+# ---------------------------------------------------------------------------
+
+
+class TestDrainExpiredAndDeliver:
+    async def test_empty_queue(self):
+        ch = _make_channel()
+        ch.client.zpopmin = AsyncMock(return_value=[])
+        result = await ch._drain_expired_and_deliver("q1")
+        assert result is False
+
+    async def test_valid_message_found(self):
+        ch = _make_channel()
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q1", cb, True)
+
+        ch.client.zpopmin = AsyncMock(
+            return_value=[(b"tag-valid", 1000.0)],
+        )
+        ch.client.hmget = AsyncMock(
+            return_value=[
+                b'{"body": "found", "properties": {}, "headers": {}}',
+                b"0",
+            ],
+        )
+
+        result = await ch._drain_expired_and_deliver("q1")
+        assert result is True
+        cb.assert_called_once()
+
+    async def test_expired_then_valid(self):
+        ch = _make_channel()
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q1", cb, True)
+
+        # First zpopmin: expired (payload=None), second: valid
+        ch.client.zpopmin = AsyncMock(
+            side_effect=[
+                [(b"expired-tag", 500.0)],
+                [(b"valid-tag", 1000.0)],
+            ],
+        )
+        ch.client.hmget = AsyncMock(
+            side_effect=[
+                [None, None],  # expired
+                [b'{"body": "ok", "properties": {}, "headers": {}}', b"2"],  # valid with restore_count=2
+            ],
+        )
+        ch.client.zrem = AsyncMock()
+
+        result = await ch._drain_expired_and_deliver("q1")
+        assert result is True
+        # Should have cleaned up the expired tag from index
+        ch.client.zrem.assert_called_once()
+        # Callback should have the message with x-restore-count
+        msg = cb.call_args[0][1]
+        assert msg.headers.get("x-restore-count") == 2
+
+    async def test_all_expired(self):
+        ch = _make_channel()
+
+        # First zpopmin: expired, second: empty
+        ch.client.zpopmin = AsyncMock(
+            side_effect=[
+                [(b"expired-1", 500.0)],
+                [],  # queue now empty
+            ],
+        )
+        ch.client.hmget = AsyncMock(return_value=[None, None])
+        ch.client.zrem = AsyncMock()
+
+        result = await ch._drain_expired_and_deliver("q1")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# drain_events (full path with fanout racing)
+# ---------------------------------------------------------------------------
+
+
+class TestDrainEventsFull:
+    async def test_drain_no_consumers(self):
+        ch = _make_channel()
+        result = await ch.drain_events(timeout=0.01)
+        assert result is False
+
+    async def test_drain_regular_only(self):
+        ch = _make_channel()
+        ch._consumers["tag1"] = ("q1", MagicMock(), True)
+        ch._consume_regular = AsyncMock(return_value=True)
+
+        result = await ch.drain_events(timeout=0.5)
+        assert result is True
+
+    async def test_drain_fanout_only(self):
+        ch = _make_channel()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+        ch._consumers["tag1"] = ("fq1", MagicMock(), True)
+        ch._xread_wait = AsyncMock(return_value=True)
+
+        result = await ch.drain_events(timeout=0.5)
+        assert result is True
+
+    async def test_drain_regular_and_fanout(self):
+        ch = _make_channel()
+        # Regular consumer
+        ch._consumers["tag1"] = ("q1", MagicMock(), True)
+        # Fanout consumer
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fanout_ex", "*")
+        ch.active_fanout_queues.add("fq1")
+        ch._consumers["tag2"] = ("fq1", MagicMock(), True)
+
+        ch._consume_regular = AsyncMock(return_value=True)
+
+        async def slow_xread(timeout):
+            await asyncio.sleep(10)
+            return False
+
+        ch._xread_wait = slow_xread
+
+        result = await ch.drain_events(timeout=1.0)
+        assert result is True
+
+    async def test_drain_all_return_false(self):
+        ch = _make_channel()
+        ch._consumers["tag1"] = ("q1", MagicMock(), True)
+        ch._consume_regular = AsyncMock(return_value=False)
+
+        result = await ch.drain_events(timeout=0.1)
+        assert result is False
+
+    async def test_drain_handles_task_exception(self):
+        ch = _make_channel()
+        ch._consumers["tag1"] = ("q1", MagicMock(), True)
+        ch._consume_regular = AsyncMock(side_effect=RuntimeError("boom"))
+
+        # Should not propagate, just return False
+        result = await ch.drain_events(timeout=0.1)
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Periodic tasks lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestPeriodicTasks:
+    async def test_start_periodic_tasks_creates_tasks(self):
+        ch = _make_channel()
+        # Patch the async methods to sleep forever then get cancelled
+        ch._periodic_enqueue_due = AsyncMock(side_effect=asyncio.CancelledError)
+        ch._periodic_heartbeat = AsyncMock(side_effect=asyncio.CancelledError)
+
+        ch._start_periodic_tasks()
+        assert ch._enqueue_task is not None
+        assert ch._heartbeat_task is not None
+
+        # Cleanup
+        ch._enqueue_task.cancel()
+        ch._heartbeat_task.cancel()
+        try:
+            await ch._enqueue_task
+        except (asyncio.CancelledError, Exception):  # fmt: skip
+            pass
+        try:
+            await ch._heartbeat_task
+        except (asyncio.CancelledError, Exception):  # fmt: skip
+            pass
+
+    async def test_start_periodic_tasks_idempotent(self):
+        ch = _make_channel()
+        ch._periodic_enqueue_due = AsyncMock(side_effect=asyncio.CancelledError)
+        ch._periodic_heartbeat = AsyncMock(side_effect=asyncio.CancelledError)
+
+        ch._start_periodic_tasks()
+        task1 = ch._enqueue_task
+        ch._start_periodic_tasks()
+        task2 = ch._enqueue_task
+        # Should reuse the same task since it's not done
+        assert task1 is task2
+
+        # Cleanup
+        for t in (ch._enqueue_task, ch._heartbeat_task):
+            if t:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):  # fmt: skip
+                    pass
+
+    async def test_periodic_enqueue_due_runs_and_cancels(self):
+        ch = _make_channel()
+        call_count = 0
+
+        async def mock_enqueue():
+            nonlocal call_count
+            call_count += 1
+            return (0, 0)
+
+        ch._enqueue_due_messages = mock_enqueue
+
+        with patch("kombu.transport.redis.DEFAULT_REQUEUE_CHECK_INTERVAL", 0.01):
+            task = asyncio.ensure_future(ch._periodic_enqueue_due())
+            await asyncio.sleep(0.05)
+            ch._closed = True
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert call_count >= 1
+
+    async def test_periodic_heartbeat_runs_and_cancels(self):
+        ch = _make_channel(visibility_timeout=0.03)
+        call_count = 0
+
+        async def mock_heartbeat():
+            nonlocal call_count
+            call_count += 1
+
+        ch._update_messages_index = mock_heartbeat
+
+        task = asyncio.ensure_future(ch._periodic_heartbeat())
+        await asyncio.sleep(0.05)
+        ch._closed = True
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert call_count >= 1
+
+    async def test_periodic_enqueue_due_handles_exception(self):
+        ch = _make_channel()
+        call_count = 0
+
+        async def mock_enqueue():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("transient error")
+            return (0, 0)
+
+        ch._enqueue_due_messages = mock_enqueue
+
+        with patch("kombu.transport.redis.DEFAULT_REQUEUE_CHECK_INTERVAL", 0.01):
+            task = asyncio.ensure_future(ch._periodic_enqueue_due())
+            await asyncio.sleep(0.05)
+            ch._closed = True
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # Should have retried after exception
+        assert call_count >= 2
+
+    async def test_periodic_refresh_expires(self):
+        ch = _make_channel()
+        ch._expires = {"q1": 30_000}
+        ch._refresh_queue_expires = AsyncMock()
+
+        task = asyncio.ensure_future(ch._periodic_refresh_expires())
+        await asyncio.sleep(0.02)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # interval = 30_000 / 2 / 1000 = 15s, so with 0.02s wait it won't fire
+        # But check it doesn't crash
+
+    async def test_periodic_refresh_expires_no_queues(self):
+        ch = _make_channel()
+        ch._expires = {}  # no queues with TTL
+        # Should return immediately
+        await ch._periodic_refresh_expires()
+
+    async def test_update_expires_task_starts(self):
+        ch = _make_channel()
+        ch._expires = {"q1": 20_000}
+        ch._refresh_queue_expires = AsyncMock()
+        ch._periodic_refresh_expires = AsyncMock(side_effect=asyncio.CancelledError)
+
+        ch._update_expires_task()
+        assert ch._expires_task is not None
+
+        # Cleanup
+        ch._expires_task.cancel()
+        try:
+            await ch._expires_task
+        except (asyncio.CancelledError, Exception):  # fmt: skip
+            pass
+
+    async def test_update_expires_task_restarts(self):
+        ch = _make_channel()
+        ch._expires = {"q1": 20_000}
+        ch._periodic_refresh_expires = AsyncMock(side_effect=asyncio.CancelledError)
+
+        ch._update_expires_task()
+        first_task = ch._expires_task
+
+        ch._update_expires_task()
+        second_task = ch._expires_task
+        assert first_task is not second_task
+
+        # Cleanup
+        for t in (first_task, second_task):
+            if t and not t.done():
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):  # fmt: skip
+                    pass
+
+
+# ---------------------------------------------------------------------------
+# Close with periodic task cancellation
+# ---------------------------------------------------------------------------
+
+
+class TestClosePeriodicTasks:
+    async def test_close_cancels_periodic_tasks(self):
+        ch = _make_channel()
+        ch._requeue_by_tag = AsyncMock()
+
+        # Create mock tasks that simulate real asyncio tasks
+        async def forever():
+            await asyncio.sleep(999)
+
+        ch._enqueue_task = asyncio.ensure_future(forever())
+        ch._heartbeat_task = asyncio.ensure_future(forever())
+        ch._expires_task = asyncio.ensure_future(forever())
+
+        await ch.close()
+
+        assert ch._enqueue_task.cancelled()
+        assert ch._heartbeat_task.cancelled()
+        assert ch._expires_task.cancelled()
+
+    async def test_close_handles_task_already_done(self):
+        ch = _make_channel()
+        ch._requeue_by_tag = AsyncMock()
+
+        # A task that's already finished
+        async def instant():
+            return
+
+        ch._enqueue_task = asyncio.ensure_future(instant())
+        await asyncio.sleep(0)  # let it complete
+        assert ch._enqueue_task.done()
+
+        # Should not raise
+        await ch.close()
+
+    async def test_close_requeue_error_logged(self):
+        ch = _make_channel()
+        ch._requeue_by_tag = AsyncMock(side_effect=ConnectionError("lost"))
+        ch._delivered["tag1"] = ("q1", MagicMock())
+
+        # Should not raise despite requeue failure
+        await ch.close()
+        assert len(ch._delivered) == 0
+
+    async def test_close_auto_delete_error_ignored(self):
+        ch = _make_channel()
+        ch._requeue_by_tag = AsyncMock()
+        ch.queue_delete = AsyncMock(side_effect=RuntimeError("delete failed"))
+        ch.auto_delete_queues.add("auto_q")
+
+        # Should not raise despite delete failure
+        await ch.close()
+
+
+# ---------------------------------------------------------------------------
+# _slow_consume error paths
+# ---------------------------------------------------------------------------
+
+
+class TestSlowConsumeErrors:
+    async def test_slow_consume_bzmpop_error(self):
+        ch = _make_channel()
+        ch.client.bzmpop = AsyncMock(side_effect=ConnectionError("lost"))
+        result = await ch._slow_consume(["q1"], timeout=1.0)
+        assert result is False
+
+    async def test_slow_consume_empty_result(self):
+        ch = _make_channel()
+        ch.client.bzmpop = AsyncMock(return_value=None)
+        result = await ch._slow_consume(["q1"], timeout=1.0)
+        assert result is False
+
+    async def test_slow_consume_expired_hash_drains(self):
+        """When hash expired after BZMPOP, should fall back to drain."""
+        ch = _make_channel()
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q1", cb, True)
+
+        ch.client.bzmpop = AsyncMock(
+            return_value=(
+                b"queue:q1",
+                [(b"tag-expired", 1000.0)],
+            ),
+        )
+
+        mock_pipe = AsyncMock()
+        mock_pipe.zadd = AsyncMock()
+        mock_pipe.hmget = AsyncMock()
+        mock_pipe.execute = AsyncMock(
+            return_value=[
+                None,  # zadd
+                [None, None],  # hmget: payload is None (expired)
+            ],
+        )
+
+        class PipeCtx:
+            async def __aenter__(self):
+                return mock_pipe
+
+            async def __aexit__(self, *a):
+                pass
+
+        ch.client.pipeline = MagicMock(return_value=PipeCtx())
+        ch.client.zrem = AsyncMock()
+        ch._drain_expired_and_deliver = AsyncMock(return_value=False)
+
+        result = await ch._slow_consume(["q1"], timeout=1.0)
+        assert result is False
+        # Should have tried to clean up the index
+        ch.client.zrem.assert_called_once()
+        # Should have called drain_expired_and_deliver
+        ch._drain_expired_and_deliver.assert_called_once_with("q1")
+
+    async def test_slow_consume_restore_count_injected(self):
+        ch = _make_channel()
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q1", cb, True)
+
+        ch.client.bzmpop = AsyncMock(
+            return_value=(
+                b"queue:q1",
+                [(b"tag-restored", 1000.0)],
+            ),
+        )
+
+        mock_pipe = AsyncMock()
+        mock_pipe.zadd = AsyncMock()
+        mock_pipe.hmget = AsyncMock()
+        mock_pipe.execute = AsyncMock(
+            return_value=[
+                None,
+                [b'{"body": "hi", "properties": {}, "headers": {}}', b"5"],
+            ],
+        )
+
+        class PipeCtx:
+            async def __aenter__(self):
+                return mock_pipe
+
+            async def __aexit__(self, *a):
+                pass
+
+        ch.client.pipeline = MagicMock(return_value=PipeCtx())
+
+        result = await ch._slow_consume(["q1"], timeout=1.0)
+        assert result is True
+        msg = cb.call_args[0][1]
+        assert msg.headers["x-restore-count"] == 5
+
+    async def test_slow_consume_with_global_prefix(self):
+        ch = _make_channel(global_keyprefix="app:")
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q1", cb, True)
+
+        ch.client.bzmpop = AsyncMock(
+            return_value=(
+                b"app:queue:q1",  # prefixed key returned by Redis
+                [(b"tag-1", 1000.0)],
+            ),
+        )
+
+        mock_pipe = AsyncMock()
+        mock_pipe.zadd = AsyncMock()
+        mock_pipe.hmget = AsyncMock()
+        mock_pipe.execute = AsyncMock(
+            return_value=[
+                None,
+                [b'{"body": "ok", "properties": {}, "headers": {}}', b"0"],
+            ],
+        )
+
+        class PipeCtx:
+            async def __aenter__(self):
+                return mock_pipe
+
+            async def __aexit__(self, *a):
+                pass
+
+        ch.client.pipeline = MagicMock(return_value=PipeCtx())
+
+        result = await ch._slow_consume(["q1"], timeout=1.0)
+        assert result is True
+        # Check the message was delivered to q1 (unprefixed)
+        cb.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _put_message fanout XADD
+# ---------------------------------------------------------------------------
+
+
+class TestPutMessageFanout:
+    async def test_fanout_publish_uses_xadd(self):
+        ch = _make_channel()
+        ch._exchanges["fanout_ex"] = {"type": "fanout"}
+        ch.client.xadd = AsyncMock()
+
+        await ch._fanout_publish("fanout_ex", b'{"body": "hello"}')
+
+        ch.client.xadd.assert_called_once()
+        call_kw = ch.client.xadd.call_args[1]
+        assert "uuid" in call_kw["fields"]
+        assert call_kw["fields"]["payload"] == '{"body": "hello"}'
+        assert call_kw["maxlen"] == ch._stream_maxlen
+        assert call_kw["approximate"] is True
+
+    async def test_fanout_publish_custom_maxlen(self):
+        ch = _make_channel(stream_maxlen=500)
+        ch.client.xadd = AsyncMock()
+
+        await ch._fanout_publish("fanout_ex", b'{"body": "test"}')
+        call_kw = ch.client.xadd.call_args[1]
+        assert call_kw["maxlen"] == 500
+
+    async def test_put_message_with_message_ttl(self):
+        ch = _make_channel(message_ttl=3600)
+
+        mock_pipe = AsyncMock()
+        mock_pipe.hset = AsyncMock()
+        mock_pipe.expire = AsyncMock()
+        mock_pipe.zadd = AsyncMock()
+        mock_pipe.execute = AsyncMock()
+
+        class PipeCtx:
+            async def __aenter__(self):
+                return mock_pipe
+
+            async def __aexit__(self, *a):
+                pass
+
+        ch.client.pipeline = MagicMock(return_value=PipeCtx())
+        await ch._put_message("q1", b'{"body": "test", "properties": {}, "headers": {}}')
+
+        # Should call expire with TTL
+        mock_pipe.expire.assert_called_once()
+        ttl_arg = mock_pipe.expire.call_args[0][1]
+        assert ttl_arg == 3600
+
+    async def test_put_message_with_queue_ttl(self):
+        ch = _make_channel()
+        ch._expires["q1"] = 30_000
+
+        mock_pipe = AsyncMock()
+        mock_pipe.hset = AsyncMock()
+        mock_pipe.zadd = AsyncMock()
+        mock_pipe.pexpire = AsyncMock()
+        mock_pipe.execute = AsyncMock()
+
+        class PipeCtx:
+            async def __aenter__(self):
+                return mock_pipe
+
+            async def __aexit__(self, *a):
+                pass
+
+        ch.client.pipeline = MagicMock(return_value=PipeCtx())
+        await ch._put_message("q1", b'{"body": "test", "properties": {}, "headers": {}}')
+
+        # Should call pexpire for queue TTL
+        assert mock_pipe.pexpire.call_count >= 2  # queue_key + index_key
+
+    async def test_put_message_native_delayed(self):
+        ch = _make_channel()
+
+        mock_pipe = AsyncMock()
+        mock_pipe.hset = AsyncMock()
+        mock_pipe.zadd = AsyncMock()
+        mock_pipe.execute = AsyncMock()
+
+        class PipeCtx:
+            async def __aenter__(self):
+                return mock_pipe
+
+            async def __aexit__(self, *a):
+                pass
+
+        ch.client.pipeline = MagicMock(return_value=PipeCtx())
+
+        # ETA far in the future (> RCI)
+        future_eta = 9999999999.0
+        msg = f'{{"body": "delayed", "properties": {{"eta": {future_eta}}}, "headers": {{}}}}'
+        with patch("kombu.transport.redis.time", return_value=1000.0):
+            await ch._put_message("q1", msg.encode())
+
+        # Should set native_delayed=1 in hash
+        hset_call = mock_pipe.hset.call_args
+        mapping = hset_call[1]["mapping"]
+        assert mapping["native_delayed"] == 1
+        assert mapping["eta"] == future_eta
+
+        # Should NOT add to queue sorted set (only to index)
+        zadd_calls = mock_pipe.zadd.call_args_list
+        assert any(MESSAGES_INDEX_PREFIX in str(c) for c in zadd_calls)
+        # With native delayed, queue zadd should NOT happen
+        assert not any(QUEUE_KEY_PREFIX in str(c) and MESSAGES_INDEX_PREFIX not in str(c) for c in zadd_calls)
+
+
+# ---------------------------------------------------------------------------
+# _refresh_queue_expires
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshQueueExpires:
+    async def test_refresh_expires_empty(self):
+        ch = _make_channel()
+        ch._expires = {}
+        await ch._refresh_queue_expires()  # Should be no-op
+
+    async def test_refresh_expires_calls_pexpire(self):
+        ch = _make_channel()
+        ch._expires = {"q1": 30_000, "q2": 60_000}
+
+        mock_pipe = AsyncMock()
+        mock_pipe.pexpire = AsyncMock()
+        mock_pipe.execute = AsyncMock()
+
+        class PipeCtx:
+            async def __aenter__(self):
+                return mock_pipe
+
+            async def __aexit__(self, *a):
+                pass
+
+        ch.client.pipeline = MagicMock(return_value=PipeCtx())
+        await ch._refresh_queue_expires()
+
+        # 2 queues x 2 keys (queue + index) = 4 pexpire calls
+        assert mock_pipe.pexpire.call_count == 4
+
+
+# ---------------------------------------------------------------------------
+# _deliver_to_consumer
+# ---------------------------------------------------------------------------
+
+
+class TestDeliverToConsumer:
+    async def test_deliver_no_ack_not_tracked(self):
+        ch = _make_channel()
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q1", cb, True)  # no_ack=True
+
+        msg = ch._create_message("q1", {"body": "hi", "properties": {}, "headers": {}}, "dtag1")
+        await ch._deliver_to_consumer("q1", msg)
+
+        cb.assert_called_once()
+        assert "dtag1" not in ch._delivered
+
+    async def test_deliver_ack_tracked(self):
+        ch = _make_channel()
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q1", cb, False)  # no_ack=False
+
+        msg = ch._create_message("q1", {"body": "hi", "properties": {}, "headers": {}}, "dtag1")
+        await ch._deliver_to_consumer("q1", msg)
+
+        cb.assert_called_once()
+        assert "dtag1" in ch._delivered
+
+    async def test_deliver_async_callback(self):
+        ch = _make_channel()
+        cb = AsyncMock()
+        ch._consumers["tag1"] = ("q1", cb, True)
+
+        msg = ch._create_message("q1", {"body": "hi", "properties": {}, "headers": {}}, "dtag1")
+        await ch._deliver_to_consumer("q1", msg)
+
+        cb.assert_called_once()
+
+    async def test_deliver_no_matching_consumer(self):
+        ch = _make_channel()
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q2", cb, True)  # consumer for q2, not q1
+
+        msg = ch._create_message("q1", {"body": "hi", "properties": {}, "headers": {}}, "dtag1")
+        await ch._deliver_to_consumer("q1", msg)
+
+        cb.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _create_message edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestCreateMessage:
+    def test_base64_body(self):
+        ch = _make_channel()
+        import base64
+
+        encoded = base64.b64encode(b"binary data").decode()
+        payload = {
+            "body": encoded,
+            "properties": {},
+            "headers": {"body_encoding": "base64"},
+            "content-type": "application/octet-stream",
+            "content-encoding": "utf-8",
+        }
+        msg = ch._create_message("q1", payload, "tag1")
+        assert msg.body == b"binary data"
+
+    def test_dict_body(self):
+        ch = _make_channel()
+        payload = {
+            "body": {"key": "value"},
+            "properties": {},
+            "headers": {},
+            "content-type": "application/json",
+            "content-encoding": "utf-8",
+        }
+        msg = ch._create_message("q1", payload, "tag1")
+        assert isinstance(msg.body, bytes)
+
+    def test_binary_content_encoding(self):
+        ch = _make_channel()
+        payload = {
+            "body": "raw string",
+            "properties": {},
+            "headers": {},
+            "content-type": "application/octet-stream",
+            "content-encoding": "binary",
+        }
+        msg = ch._create_message("q1", payload, "tag1")
+        assert msg.body == b"raw string"
+
+
+# ---------------------------------------------------------------------------
+# fast_consume error path
+# ---------------------------------------------------------------------------
+
+
+class TestFastConsumeErrors:
+    async def test_fast_consume_script_error(self):
+        ch = _make_channel()
+        consume_script = AsyncMock(side_effect=RuntimeError("script error"))
+        ch._consume_script = consume_script
+        result = await ch._fast_consume(["q1"])
+        assert result is False
+
+    async def test_fast_consume_passes_correct_args(self):
+        ch = _make_channel(global_keyprefix="p:")
+        consume_script = AsyncMock(return_value=None)
+        ch._consume_script = consume_script
+
+        await ch._fast_consume(["q1", "q2"])
+
+        call_kw = consume_script.call_args[1]
+        keys = call_kw["keys"]
+        args = call_kw["args"]
+        assert keys == ["p:queue:q1", "p:queue:q2"]
+        assert args[0] == "p:"  # global_keyprefix
+        assert args[1] == MESSAGE_KEY_PREFIX
+        # args[2] = new_queue_at (float string)
+        assert args[3] == MESSAGES_INDEX_PREFIX
+        assert args[4] == "q1"
+        assert args[5] == "q2"
+
+
+# ---------------------------------------------------------------------------
+# Transport connect/close edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestTransportEdgeCases:
+    async def test_connect_already_connected(self):
+        t = _make_transport()
+        t._connected = True
+        # Should be a no-op
+        await t.connect()
+
+    async def test_create_channel_auto_connects(self):
+        t = Transport(url="redis://localhost:6379")
+        with patch("kombu.transport.redis.aioredis") as mock_aioredis:
+            mock_client = AsyncMock()
+            mock_subclient = AsyncMock()
+            mock_aioredis.from_url.side_effect = [mock_client, mock_subclient]
+            mock_client.ping = AsyncMock()
+            mock_subclient.ping = AsyncMock()
+
+            ch = await t.create_channel()
+            assert t._connected
+            assert isinstance(ch, Channel)
+
+    async def test_transport_close_empty_channels(self):
+        t = _make_transport()
+        t._channels = []
+        t._client.aclose = AsyncMock()
+        t._subclient.aclose = AsyncMock()
+
+        await t.close()
+        assert not t._connected
+
+
+# ---------------------------------------------------------------------------
+# Enqueue due messages — batch limit warning
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueueBatchLimit:
+    async def test_enqueue_batch_limit_warning(self):
+        ch = _make_channel()
+        ch._consumers["tag1"] = ("q1", MagicMock(), False)
+
+        from kombu.transport.redis import DEFAULT_REQUEUE_BATCH_LIMIT
+
+        enqueue_script = AsyncMock(return_value=[DEFAULT_REQUEUE_BATCH_LIMIT, 0])
+        ch._enqueue_script = enqueue_script
+
+        with patch("kombu.transport.redis.logger") as mock_logger:
+            enqueued, dropped = await ch._enqueue_due_messages()
+            assert enqueued == DEFAULT_REQUEUE_BATCH_LIMIT
+            mock_logger.warning.assert_called()
+
+    async def test_enqueue_dropped_warning(self):
+        ch = _make_channel(max_restore_count=3)
+        ch._consumers["tag1"] = ("q1", MagicMock(), False)
+
+        enqueue_script = AsyncMock(return_value=[2, 5])
+        ch._enqueue_script = enqueue_script
+
+        with patch("kombu.transport.redis.logger") as mock_logger:
+            enqueued, dropped = await ch._enqueue_due_messages()
+            assert dropped == 5
+            mock_logger.warning.assert_called()
+
+    async def test_enqueue_multiple_queues(self):
+        ch = _make_channel()
+        ch._consumers["tag1"] = ("q1", MagicMock(), False)
+        ch._consumers["tag2"] = ("q2", MagicMock(), False)
+
+        enqueue_script = AsyncMock(side_effect=[[3, 0], [2, 1]])
+        ch._enqueue_script = enqueue_script
+
+        enqueued, dropped = await ch._enqueue_due_messages()
+        assert enqueued == 5
+        assert dropped == 1
+        assert enqueue_script.call_count == 2
+
+    async def test_enqueue_skips_fanout_queues(self):
+        ch = _make_channel()
+        ch._consumers["tag1"] = ("q1", MagicMock(), False)
+        ch._consumers["tag2"] = ("fq1", MagicMock(), False)
+        ch.active_fanout_queues.add("fq1")
+
+        enqueue_script = AsyncMock(return_value=[1, 0])
+        ch._enqueue_script = enqueue_script
+
+        await ch._enqueue_due_messages()
+        # Should only process q1, not fq1
+        assert enqueue_script.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _put_message invalid JSON fallback
+# ---------------------------------------------------------------------------
+
+
+class TestPutMessageEdgeCases:
+    async def test_put_message_invalid_json(self):
+        ch = _make_channel()
+
+        mock_pipe = AsyncMock()
+        mock_pipe.hset = AsyncMock()
+        mock_pipe.zadd = AsyncMock()
+        mock_pipe.execute = AsyncMock()
+
+        class PipeCtx:
+            async def __aenter__(self):
+                return mock_pipe
+
+            async def __aexit__(self, *a):
+                pass
+
+        ch.client.pipeline = MagicMock(return_value=PipeCtx())
+        # Send invalid JSON
+        await ch._put_message("q1", b"not valid json at all")
+
+        # Should still store something (fallback path)
+        mock_pipe.hset.assert_called_once()
+        mapping = mock_pipe.hset.call_args[1]["mapping"]
+        assert "not valid json at all" in mapping["payload"]
+
+
+# ---------------------------------------------------------------------------
+# Reject fanout tag
+# ---------------------------------------------------------------------------
+
+
+class TestRejectFanout:
+    async def test_reject_fanout_no_redis_ops(self):
+        ch = _make_channel()
+        ack_script = AsyncMock()
+        ch._ack_script = ack_script
+        ch._requeue_by_tag = AsyncMock()
+
+        ch._fanout_tags.add("ftag1")
+        ch._delivered["ftag1"] = ("fq1", MagicMock())
+
+        await ch.basic_reject("ftag1", requeue=True)
+        ack_script.assert_not_called()
+        ch._requeue_by_tag.assert_not_called()
+        assert "ftag1" not in ch._fanout_tags
+
+    async def test_reject_fanout_no_requeue(self):
+        ch = _make_channel()
+        ack_script = AsyncMock()
+        ch._ack_script = ack_script
+
+        ch._fanout_tags.add("ftag2")
+        ch._delivered["ftag2"] = ("fq1", MagicMock())
+
+        await ch.basic_reject("ftag2", requeue=False)
+        ack_script.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Recover edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRecoverEdgeCases:
+    async def test_recover_no_requeue(self):
+        ch = _make_channel()
+        ch._requeue_by_tag = AsyncMock()
+        ch._delivered["tag1"] = ("q1", MagicMock())
+        ch._fanout_tags.add("ftag1")
+        ch._delivered["ftag1"] = ("fq1", MagicMock())
+
+        await ch.basic_recover(requeue=False)
+        ch._requeue_by_tag.assert_not_called()
+        assert len(ch._delivered) == 0
+        assert len(ch._fanout_tags) == 0
+
+    async def test_recover_skips_fanout(self):
+        ch = _make_channel()
+        ch._requeue_by_tag = AsyncMock(return_value=True)
+        ch._delivered["tag1"] = ("q1", MagicMock())
+        ch._fanout_tags.add("ftag1")
+        ch._delivered["ftag1"] = ("fq1", MagicMock())
+
+        await ch.basic_recover(requeue=True)
+        # Only tag1 should be requeued, not ftag1
+        ch._requeue_by_tag.assert_called_once_with("tag1", leftmost=True)
