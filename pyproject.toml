@@ -14,7 +14,7 @@ keywords = [
   "queue",
   "redis",
 ]
-authors = [{ name = "Ask Solem", email = "auvipy@gmail.com" }]
+authors = [{ name = "Oliver Haas", email = "ohaas@e1plus.de" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Framework :: AsyncIO",
