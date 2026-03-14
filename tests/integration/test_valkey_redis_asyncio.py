@@ -308,7 +308,7 @@ class TestExchangeTypes:
 
     async def test_topic_exchange_pattern_matching(self, channel):
         """Test topic exchange pattern matching."""
-        from kombu.transport.redis import _topic_match
+        from kombu.transport.valkey_redis import _topic_match
 
         assert _topic_match("user.created", "user.*") is True
         assert _topic_match("user.created", "user.#") is True

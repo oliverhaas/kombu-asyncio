@@ -8,13 +8,13 @@ Currently supported transports:
 
 from .filesystem import Transport as FilesystemTransport
 from .memory import Transport as MemoryTransport
-from .redis import Transport as RedisTransport
+from .valkey_redis import Transport as RedisTransport
 
 TRANSPORT_ALIASES = {
-    "valkey": "kombu.transport.redis:Transport",
-    "valkeys": "kombu.transport.redis:Transport",
-    "redis": "kombu.transport.redis:Transport",
-    "rediss": "kombu.transport.redis:Transport",
+    "valkey": "kombu.transport.valkey_redis:Transport",
+    "valkeys": "kombu.transport.valkey_redis:Transport",
+    "redis": "kombu.transport.valkey_redis:Transport",
+    "rediss": "kombu.transport.valkey_redis:Transport",
     "memory": "kombu.transport.memory:Transport",
     "filesystem": "kombu.transport.filesystem:Transport",
 }

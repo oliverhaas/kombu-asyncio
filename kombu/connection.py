@@ -53,7 +53,7 @@ def _get_transport_class(scheme: str) -> type[BaseTransport]:
         from .transport.amqp import Transport as AMQPTransport
         from .transport.filesystem import Transport as FilesystemTransport
         from .transport.memory import Transport as MemoryTransport
-        from .transport.redis import Transport as RedisTransport
+        from .transport.valkey_redis import Transport as RedisTransport
 
         TRANSPORT_REGISTRY["amqp"] = AMQPTransport
         TRANSPORT_REGISTRY["amqps"] = AMQPTransport

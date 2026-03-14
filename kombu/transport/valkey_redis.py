@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Any
 
 from kombu.log import get_logger
 from kombu.message import Message
-from kombu.transport._redis_compat import (
+from kombu.transport._valkey_redis_compat import (
     get_all_channel_errors,
     get_all_connection_errors,
     normalize_url,
@@ -73,7 +73,7 @@ if TYPE_CHECKING:
 
 __all__ = ("Channel", "Transport")
 
-logger = get_logger("kombu.transport.redis")
+logger = get_logger("kombu.transport.valkey_redis")
 
 # ---------------------------------------------------------------------------
 # Constants (ported from celery-redis-plus constants.py)

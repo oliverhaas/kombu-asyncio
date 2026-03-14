@@ -1,10 +1,10 @@
-"""Tests for kombu.transport._redis_compat."""
+"""Tests for kombu.transport._valkey_redis_compat."""
 
 from unittest.mock import patch
 
 import pytest
 
-from kombu.transport._redis_compat import (
+from kombu.transport._valkey_redis_compat import (
     get_all_channel_errors,
     get_all_connection_errors,
     normalize_url,
@@ -31,14 +31,14 @@ class TestResolveLib:
 
     def test_neither_installed_raises(self):
         with (
-            patch("kombu.transport._redis_compat._VALKEY_AVAILABLE", False),
-            patch("kombu.transport._redis_compat._REDIS_AVAILABLE", False),
+            patch("kombu.transport._valkey_redis_compat._VALKEY_AVAILABLE", False),
+            patch("kombu.transport._valkey_redis_compat._REDIS_AVAILABLE", False),
             pytest.raises(ImportError, match="Valkey/Redis client library"),
         ):
             resolve_lib("redis://localhost")
 
     def test_redis_url_falls_back_to_valkey(self):
-        with patch("kombu.transport._redis_compat._REDIS_AVAILABLE", False):
+        with patch("kombu.transport._valkey_redis_compat._REDIS_AVAILABLE", False):
             # If only valkey is installed, redis:// should fall back
             try:
                 lib = resolve_lib("redis://localhost")
@@ -47,7 +47,7 @@ class TestResolveLib:
                 pytest.skip("valkey not installed")
 
     def test_valkey_url_falls_back_to_redis(self):
-        with patch("kombu.transport._redis_compat._VALKEY_AVAILABLE", False):
+        with patch("kombu.transport._valkey_redis_compat._VALKEY_AVAILABLE", False):
             lib = resolve_lib("valkey://localhost")
             assert lib.__name__ == "redis"
 

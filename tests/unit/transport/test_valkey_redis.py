@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kombu.entity import Exchange, Queue
-from kombu.transport.redis import (
+from kombu.transport.valkey_redis import (
     BINDING_SEP,
     DEFAULT_MAX_RESTORE_COUNT,
     DEFAULT_VISIBILITY_TIMEOUT,
@@ -375,7 +375,7 @@ class TestPublish:
 
         ch.client.pipeline = MagicMock(return_value=PipeCtx())
 
-        with patch("kombu.transport.redis.time") as mock_time:
+        with patch("kombu.transport.valkey_redis.time") as mock_time:
             mock_time.return_value = 1000.0
             await ch._put_message("q1", b'{"body": "test", "properties": {}, "headers": {}}')
 
@@ -695,7 +695,7 @@ class TestUpdateMessagesIndex:
 
         ch.client.pipeline = MagicMock(return_value=PipeCtx())
 
-        with patch("kombu.transport.redis.time") as mock_time:
+        with patch("kombu.transport.valkey_redis.time") as mock_time:
             mock_time.return_value = 1000.0
             await ch._update_messages_index()
 
@@ -1497,7 +1497,7 @@ class TestPeriodicTasks:
 
         ch._enqueue_due_messages = mock_enqueue
 
-        with patch("kombu.transport.redis.DEFAULT_REQUEUE_CHECK_INTERVAL", 0.01):
+        with patch("kombu.transport.valkey_redis.DEFAULT_REQUEUE_CHECK_INTERVAL", 0.01):
             task = asyncio.ensure_future(ch._periodic_enqueue_due())
             await asyncio.sleep(0.05)
             ch._closed = True
@@ -1543,7 +1543,7 @@ class TestPeriodicTasks:
 
         ch._enqueue_due_messages = mock_enqueue
 
-        with patch("kombu.transport.redis.DEFAULT_REQUEUE_CHECK_INTERVAL", 0.01):
+        with patch("kombu.transport.valkey_redis.DEFAULT_REQUEUE_CHECK_INTERVAL", 0.01):
             task = asyncio.ensure_future(ch._periodic_enqueue_due())
             await asyncio.sleep(0.05)
             ch._closed = True
@@ -1901,7 +1901,7 @@ class TestPutMessageFanout:
         # ETA far in the future (> RCI)
         future_eta = 9999999999.0
         msg = f'{{"body": "delayed", "properties": {{"eta": {future_eta}}}, "headers": {{}}}}'
-        with patch("kombu.transport.redis.time", return_value=1000.0):
+        with patch("kombu.transport.valkey_redis.time", return_value=1000.0):
             await ch._put_message("q1", msg.encode())
 
         # Should set native_delayed=1 in hash
@@ -2123,12 +2123,12 @@ class TestEnqueueBatchLimit:
         ch = _make_channel()
         ch._consumers["tag1"] = ("q1", MagicMock(), False)
 
-        from kombu.transport.redis import DEFAULT_REQUEUE_BATCH_LIMIT
+        from kombu.transport.valkey_redis import DEFAULT_REQUEUE_BATCH_LIMIT
 
         enqueue_script = AsyncMock(return_value=[DEFAULT_REQUEUE_BATCH_LIMIT, 0])
         ch._enqueue_script = enqueue_script
 
-        with patch("kombu.transport.redis.logger") as mock_logger:
+        with patch("kombu.transport.valkey_redis.logger") as mock_logger:
             enqueued, dropped = await ch._enqueue_due_messages()
             assert enqueued == DEFAULT_REQUEUE_BATCH_LIMIT
             mock_logger.warning.assert_called()
@@ -2140,7 +2140,7 @@ class TestEnqueueBatchLimit:
         enqueue_script = AsyncMock(return_value=[2, 5])
         ch._enqueue_script = enqueue_script
 
-        with patch("kombu.transport.redis.logger") as mock_logger:
+        with patch("kombu.transport.valkey_redis.logger") as mock_logger:
             enqueued, dropped = await ch._enqueue_due_messages()
             assert dropped == 5
             mock_logger.warning.assert_called()
