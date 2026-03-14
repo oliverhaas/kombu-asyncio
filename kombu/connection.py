@@ -255,7 +255,7 @@ class Connection:
 
         channel = await self.default_channel()
         delivered = await channel.drain_events(timeout=timeout)
-        if not delivered and timeout:
+        if not delivered and timeout is not None:
             raise TimeoutError("timed out")
 
     async def ensure_connection(
@@ -343,6 +343,24 @@ class Connection:
     ) -> None:
         """Async context manager exit."""
         await self.close()
+
+    def __enter__(self) -> Connection:
+        """Sync context manager entry (for compatibility with sync code like Flower)."""
+        from asgiref.sync import async_to_sync
+
+        async_to_sync(self.connect)()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        """Sync context manager exit (for compatibility with sync code like Flower)."""
+        from asgiref.sync import async_to_sync
+
+        async_to_sync(self.close)()
 
     def __repr__(self) -> str:
         return f"<Connection: {self._url} connected={self.is_connected}>"

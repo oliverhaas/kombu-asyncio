@@ -681,7 +681,15 @@ class Channel:
             if q not in self.active_fanout_queues and q not in regular_queues:
                 regular_queues.append(q)
 
-        effective_timeout = timeout or 1.0
+        effective_timeout = timeout if timeout is not None else 1.0
+
+        # Non-blocking fast path: only try FAST consume (Lua script),
+        # skip blocking BZMPOP/XREAD/asyncio.wait overhead.
+        if effective_timeout == 0:
+            if regular_queues:
+                return await self._fast_consume(regular_queues)
+            return False
+
         tasks: list[asyncio.Task] = []
 
         if regular_queues:
@@ -728,11 +736,17 @@ class Channel:
 
         FAST: atomic Lua script (ZPOPMIN + ZADD index + HMGET) — non-blocking
         SLOW: blocking BZMPOP fallback when FAST returns nil (all queues empty)
+
+        When timeout=0 (non-blocking poll), only FAST mode is attempted
+        to avoid BZMPOP blocking.
         """
-        if self._consume_fast_mode:
+        if self._consume_fast_mode or timeout == 0:
             result = await self._fast_consume(queues)
             if result:
                 return True
+            if timeout == 0:
+                # Non-blocking poll: don't fall through to blocking BZMPOP
+                return False
             # FAST returned nil — all queues empty, switch to SLOW
             self._consume_fast_mode = False
 
