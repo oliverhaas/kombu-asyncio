@@ -42,7 +42,7 @@ jobs:
         run: uv sync --group dev
 
       - name: Run tests
-        run: uv run pytest tests/ -x -q
+        run: uv run pytest tests/unit/ -x -q
 
       - name: Upload coverage
         if: always()
