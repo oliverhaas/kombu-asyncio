@@ -1,8 +1,8 @@
-"""Pure asyncio Redis transport with priority queues, Streams fanout, and delayed delivery.
+"""Pure asyncio Valkey/Redis transport with priority queues, Streams fanout, and delayed delivery.
 
-This transport uses redis.asyncio for all operations and provides:
+This transport uses valkey.asyncio or redis.asyncio for all operations and provides:
 1. BZMPOP + sorted sets for regular queues — full 0-255 priority support
-2. Redis Streams for fanout exchanges — reliable, not lossy like PUB/SUB
+2. Streams for fanout exchanges — reliable, not lossy like PUB/SUB
 3. Native delayed delivery — delay integrated into sorted set scoring
 4. Per-message hash storage — reliability and visibility tracking
 5. Global key prefixing — multi-tenant support
@@ -10,24 +10,32 @@ This transport uses redis.asyncio for all operations and provides:
 7. Atomic ack — Lua script for ZREM+DEL atomicity
 8. Restore count tracking — max_restore_count enforcement
 
-Requires Redis 7.0+ for BZMPOP support.
+Supports both valkey-py and redis-py client libraries. The URL scheme selects the
+preferred library (with automatic fallback if only one is installed):
+
+- ``valkey://`` / ``valkeys://`` → prefer valkey-py, fallback redis-py
+- ``redis://`` / ``rediss://`` → prefer redis-py, fallback valkey-py
+
+Requires Valkey 7.2+ or Redis 7.0+ for BZMPOP support.
 
 Connection String
 =================
 .. code-block::
 
-    redis://[USER:PASSWORD@]REDIS_ADDRESS[:PORT][/DB]
-    rediss://[USER:PASSWORD@]REDIS_ADDRESS[:PORT][/DB]
+    valkey://[USER:PASSWORD@]ADDRESS[:PORT][/DB]
+    valkeys://[USER:PASSWORD@]ADDRESS[:PORT][/DB]
+    redis://[USER:PASSWORD@]ADDRESS[:PORT][/DB]
+    rediss://[USER:PASSWORD@]ADDRESS[:PORT][/DB]
 
 Transport Options
 =================
-* ``global_keyprefix``: Global prefix for all Redis keys (multi-tenant)
+* ``global_keyprefix``: Global prefix for all keys (multi-tenant)
 * ``visibility_timeout``: Seconds before unacked messages are restored (default: 300)
 * ``message_ttl``: TTL for per-message hashes in seconds (-1 = no TTL)
 * ``stream_maxlen``: Maximum stream length for fanout streams (default: 10000)
 * ``fanout_prefix``: Prefix for fanout stream keys (default: '/{db}.')
 * ``max_restore_count``: Max times a message can be restored before being dropped (None = no limit)
-* ``credential_provider``: A redis CredentialProvider instance or dotted import path
+* ``credential_provider``: A CredentialProvider instance or dotted import path
 * ``socket_timeout``: Socket timeout in seconds
 * ``socket_connect_timeout``: Socket connection timeout in seconds
 * ``health_check_interval``: Health check interval for connections
@@ -43,15 +51,16 @@ from pathlib import Path
 from time import time
 from typing import TYPE_CHECKING, Any
 
-try:
-    import redis.asyncio as aioredis
-    import redis.exceptions as redis_exc
-except ImportError:
-    aioredis = None  # type: ignore[assignment]
-    redis_exc = None  # type: ignore[assignment]
-
 from kombu.log import get_logger
 from kombu.message import Message
+from kombu.transport._redis_compat import (
+    get_all_channel_errors,
+    get_all_connection_errors,
+    normalize_url,
+    resolve_async_lib,
+    resolve_exceptions,
+    resolve_lib,
+)
 from kombu.transport.base import Transport as BaseTransport
 from kombu.utils.json import dumps as json_dumps
 from kombu.utils.json import loads as json_loads
@@ -106,22 +115,11 @@ _CONSUME_MESSAGE_LUA = (_PACKAGE_DIR / "transport_consume_message.lua").read_tex
 _ACK_MESSAGE_LUA = (_PACKAGE_DIR / "transport_ack_message.lua").read_text()
 
 # ---------------------------------------------------------------------------
-# Redis error tuples
+# Valkey/Redis error tuples (from ALL installed libraries for catch-all)
 # ---------------------------------------------------------------------------
 
-if redis_exc is not None:
-    _redis_connection_errors: tuple[type[Exception], ...] = (
-        redis_exc.ConnectionError,
-        redis_exc.BusyLoadingError,
-        redis_exc.TimeoutError,
-    )
-    _redis_channel_errors: tuple[type[Exception], ...] = (
-        redis_exc.DataError,
-        redis_exc.ResponseError,
-    )
-else:
-    _redis_connection_errors = ()
-    _redis_channel_errors = ()
+_redis_connection_errors = get_all_connection_errors()
+_redis_channel_errors = get_all_channel_errors()
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +271,12 @@ class Channel:
     # ---- client access -----------------------------------------------------
 
     @property
-    def client(self) -> aioredis.Redis:
+    def client(self):
         """Main Redis client (BZMPOP, sorted set ops, publish)."""
         return self._transport._client
 
     @property
-    def subclient(self) -> aioredis.Redis:
+    def subclient(self):
         """Dedicated client for XREAD BLOCK (fanout streams)."""
         return self._transport._subclient
 
@@ -1311,11 +1309,14 @@ class Channel:
 
 
 class Transport(BaseTransport):
-    """Pure asyncio Redis transport with priority queues, reliable fanout, and delayed delivery.
+    """Pure asyncio Valkey/Redis transport with priority queues, reliable fanout, and delayed delivery.
 
-    Uses two Redis clients:
+    Uses two clients:
     - Main client for BZMPOP, sorted set ops, hash ops, publish
     - Sub-client dedicated to XREAD BLOCK for fanout streams
+
+    Supports both valkey-py and redis-py. The URL scheme selects which library
+    to prefer (with fallback if only one is installed).
     """
 
     Channel = Channel
@@ -1342,13 +1343,15 @@ class Transport(BaseTransport):
         url: str = "redis://localhost:6379",
         **options: Any,
     ) -> None:
-        if aioredis is None:
-            raise ImportError(
-                "redis package is required for Redis transport. Install it with: pip install redis",
-            )
+        self._lib = resolve_lib(url)
+        self._aiolib = resolve_async_lib(url)
+        self._exc = resolve_exceptions(url)
+        self.driver_name = self._lib.__name__
+
         super().__init__(url, **options)
-        self._client: aioredis.Redis | None = None
-        self._subclient: aioredis.Redis | None = None
+        self._url = normalize_url(self._url, self._lib)
+        self._client = None
+        self._subclient = None
         self._channels: list[Channel] = []
         self._connection_id = str(uuid.uuid4())
         self._connected = False
@@ -1389,10 +1392,10 @@ class Transport(BaseTransport):
             credential_provider_cls = symbol_by_name(credential_provider)
             credential_provider = credential_provider_cls()
 
-        # Validate if redis.credentials.CredentialProvider is available
+        # Validate using the resolved library's CredentialProvider
         try:
-            from redis.credentials import CredentialProvider
-        except ImportError:
+            CredentialProvider = self._lib.credentials.CredentialProvider
+        except (AttributeError, ImportError):  # fmt: skip
             CredentialProvider = None  # type: ignore[assignment, misc]
 
         if CredentialProvider is not None and not isinstance(credential_provider, CredentialProvider):
@@ -1411,12 +1414,12 @@ class Transport(BaseTransport):
         cred_kw = self._process_credential_provider()
         client_kw.update(cred_kw)
 
-        self._client = aioredis.from_url(
+        self._client = self._aiolib.from_url(
             self._url,
             decode_responses=False,
             **client_kw,
         )
-        self._subclient = aioredis.from_url(
+        self._subclient = self._aiolib.from_url(
             self._url,
             decode_responses=False,
             **client_kw,
@@ -1425,7 +1428,7 @@ class Transport(BaseTransport):
         await self._client.ping()
         await self._subclient.ping()
         self._connected = True
-        logger.debug("Connected to Redis at %s (dual clients)", self._url)
+        logger.debug("Connected via %s at %s (dual clients)", self._lib.__name__, self._url)
 
     async def close(self) -> None:
         for channel in self._channels:
@@ -1455,8 +1458,6 @@ class Transport(BaseTransport):
 
     def driver_version(self) -> str:
         try:
-            import redis
-
-            return redis.__version__
-        except (ImportError, AttributeError):  # fmt: skip
+            return self._lib.__version__
+        except AttributeError:
             return "N/A"

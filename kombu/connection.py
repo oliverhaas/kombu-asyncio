@@ -57,6 +57,8 @@ def _get_transport_class(scheme: str) -> type[BaseTransport]:
 
         TRANSPORT_REGISTRY["amqp"] = AMQPTransport
         TRANSPORT_REGISTRY["amqps"] = AMQPTransport
+        TRANSPORT_REGISTRY["valkey"] = RedisTransport
+        TRANSPORT_REGISTRY["valkeys"] = RedisTransport
         TRANSPORT_REGISTRY["redis"] = RedisTransport
         TRANSPORT_REGISTRY["rediss"] = RedisTransport
         TRANSPORT_REGISTRY["memory"] = MemoryTransport

@@ -1,7 +1,7 @@
 """Built-in transports - Pure asyncio version.
 
 Currently supported transports:
-- redis: Redis using redis.asyncio (redis-py 5.0+)
+- valkey/redis: Valkey/Redis using valkey.asyncio or redis.asyncio
 - memory: In-memory transport using asyncio.Queue
 - filesystem: File-system based transport using aiofiles
 """
@@ -11,6 +11,8 @@ from .memory import Transport as MemoryTransport
 from .redis import Transport as RedisTransport
 
 TRANSPORT_ALIASES = {
+    "valkey": "kombu.transport.redis:Transport",
+    "valkeys": "kombu.transport.redis:Transport",
     "redis": "kombu.transport.redis:Transport",
     "rediss": "kombu.transport.redis:Transport",
     "memory": "kombu.transport.memory:Transport",

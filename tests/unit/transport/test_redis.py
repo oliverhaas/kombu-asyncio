@@ -850,16 +850,17 @@ class TestTransport:
 
     async def test_connect(self):
         t = Transport(url="redis://localhost:6379")
-        with patch("kombu.transport.redis.aioredis") as mock_aioredis:
-            mock_client = AsyncMock()
-            mock_subclient = AsyncMock()
-            mock_aioredis.from_url.side_effect = [mock_client, mock_subclient]
-            mock_client.ping = AsyncMock()
-            mock_subclient.ping = AsyncMock()
+        mock_aiolib = MagicMock()
+        mock_client = AsyncMock()
+        mock_subclient = AsyncMock()
+        mock_aiolib.from_url.side_effect = [mock_client, mock_subclient]
+        mock_client.ping = AsyncMock()
+        mock_subclient.ping = AsyncMock()
+        t._aiolib = mock_aiolib
 
-            await t.connect()
-            assert t._connected is True
-            assert mock_aioredis.from_url.call_count == 2
+        await t.connect()
+        assert t._connected is True
+        assert mock_aiolib.from_url.call_count == 2
 
     async def test_close(self):
         t = _make_transport()
@@ -911,11 +912,13 @@ class TestCredentialProvider:
         # Create a mock that satisfies the CredentialProvider check
         mock_provider = MagicMock()
 
-        with (
-            patch.dict(t._options, {"credential_provider": mock_provider}),
-            patch("kombu.transport.redis.aioredis"),
-            patch("redis.credentials.CredentialProvider", new=type(mock_provider)),
-        ):
+        # Mock the _lib.credentials.CredentialProvider to accept our mock
+        mock_credentials = MagicMock()
+        mock_credentials.CredentialProvider = type(mock_provider)
+
+        with patch.dict(t._options, {"credential_provider": mock_provider}):
+            t._lib = MagicMock()
+            t._lib.credentials = mock_credentials
             kw = t._process_credential_provider()
             assert kw["credential_provider"] is mock_provider
 
@@ -2088,16 +2091,17 @@ class TestTransportEdgeCases:
 
     async def test_create_channel_auto_connects(self):
         t = Transport(url="redis://localhost:6379")
-        with patch("kombu.transport.redis.aioredis") as mock_aioredis:
-            mock_client = AsyncMock()
-            mock_subclient = AsyncMock()
-            mock_aioredis.from_url.side_effect = [mock_client, mock_subclient]
-            mock_client.ping = AsyncMock()
-            mock_subclient.ping = AsyncMock()
+        mock_aiolib = MagicMock()
+        mock_client = AsyncMock()
+        mock_subclient = AsyncMock()
+        mock_aiolib.from_url.side_effect = [mock_client, mock_subclient]
+        mock_client.ping = AsyncMock()
+        mock_subclient.ping = AsyncMock()
+        t._aiolib = mock_aiolib
 
-            ch = await t.create_channel()
-            assert t._connected
-            assert isinstance(ch, Channel)
+        ch = await t.create_channel()
+        assert t._connected
+        assert isinstance(ch, Channel)
 
     async def test_transport_close_empty_channels(self):
         t = _make_transport()

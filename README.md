@@ -9,8 +9,8 @@ This package exists as a standalone library for compatibility with packages that
 ## Overview
 
 - Ground-up asyncio rewrite, all operations are `async`/`await`, no sync API
-- Transports: Redis, AMQP (via aio-pika), Memory, Filesystem
-- Exchange types: direct, fanout, topic (emulated on Redis)
+- Transports: Valkey/Redis, AMQP (via aio-pika), Memory, Filesystem
+- Exchange types: direct, fanout, topic (emulated on Valkey/Redis)
 - **Not a drop-in replacement for Kombu**, this is a completely breaking change from the original
 
 ## Key differences from Kombu
@@ -26,7 +26,7 @@ This package exists as a standalone library for compatibility with packages that
 ## Requirements
 
 - Python 3.14+
-- redis-py 7.1+ (Redis transport)
+- valkey-py 6.1+ or redis-py 7.1+ (Valkey/Redis transport)
 - aio-pika 9+ (AMQP transport, optional)
 
 ## License

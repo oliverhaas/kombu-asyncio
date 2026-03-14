@@ -13,6 +13,7 @@ keywords = [
   "python",
   "queue",
   "redis",
+  "valkey",
 ]
 authors = [{ name = "Oliver Haas", email = "ohaas@e1plus.de" }]
 classifiers = [
@@ -39,6 +40,7 @@ Source = "https://github.com/oliverhaas/kombu-asyncio"
 [project.optional-dependencies]
 # Transport dependencies
 amqp = ["aio-pika>=9.0.0"]
+valkey = ["valkey>=6.1.0"]
 redis = ["redis>=7.1.0"]
 # Serialization formats
 msgpack = ["msgpack"]
@@ -53,7 +55,8 @@ dev = [
   "pytest-cov==7.0.0",
   "pytest-mock==3.15.1",
   "pytest-xdist==3.8.0",
-  "redis>=7.1.0",
+  "redis==7.1.0",
+  "valkey==6.1.1",
   "ruff==0.15.2",
   "ty==0.0.18",
 ]
@@ -155,6 +158,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "redis.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "valkey.*"
 ignore_missing_imports = true
 
 [tool.ty.environment]
