@@ -34,8 +34,7 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Changelog = "https://github.com/oliverhaas/kombu/blob/main-asyncio/Changelog.rst"
-Source = "https://github.com/oliverhaas/kombu"
+Source = "https://github.com/oliverhaas/kombu-asyncio"
 
 [project.optional-dependencies]
 # Transport dependencies
