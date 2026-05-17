@@ -1468,9 +1468,9 @@ class TestPersistentConsumerTasks:
         # state stays in sync if/when Redis recovers.
         from kombu.transport import valkey_redis
 
-        monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_SAFETY_TIMEOUT", 0.05)
+        monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_HEADROOM", 0.0)
 
-        ch = _make_channel()
+        ch = _make_channel(brpop_timeout=0.05)
         ch._consumers["tag1"] = ("q1", MagicMock(), True)
 
         cancelled = False
@@ -1502,9 +1502,9 @@ class TestPersistentConsumerTasks:
         # the next drain_events call — _consume_regular runs only once.
         from kombu.transport import valkey_redis
 
-        monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_SAFETY_TIMEOUT", 0.05)
+        monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_HEADROOM", 0.0)
 
-        ch = _make_channel()
+        ch = _make_channel(brpop_timeout=0.05)
         ch._consumers["tag1"] = ("q1", MagicMock(), True)
 
         invocations = 0
@@ -1523,9 +1523,9 @@ class TestPersistentConsumerTasks:
         first_task = ch._consume_iter_task
         assert first_task is not None
 
-        # Restore a generous safety net so the next call harvests the same
+        # Restore a generous headroom so the next call harvests the same
         # iteration when it completes.
-        monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_SAFETY_TIMEOUT", 5.0)
+        monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_HEADROOM", 5.0)
         result = await ch.drain_events(timeout=1.0)
         assert result is True
         assert invocations == 1
@@ -1556,14 +1556,15 @@ class TestPersistentConsumerTasks:
         assert ch._closing is True
 
     async def test_close_cancels_hung_iteration_with_warning(self, monkeypatch, caplog):
-        # If the iteration hangs past CLOSE_DRAIN_TIMEOUT, close cancels it as
-        # a last resort and logs a warning. Stranding at shutdown is acceptable
-        # since visibility-timeout restore recovers those on next worker boot.
+        # If the iteration hangs past brpop_timeout + CLOSE_DRAIN_HEADROOM,
+        # close cancels it as a last resort and logs a warning. Stranding at
+        # shutdown is acceptable since visibility-timeout restore recovers
+        # those on next worker boot.
         from kombu.transport import valkey_redis
 
-        monkeypatch.setattr(valkey_redis, "CLOSE_DRAIN_TIMEOUT", 0.05)
+        monkeypatch.setattr(valkey_redis, "CLOSE_DRAIN_HEADROOM", 0.0)
 
-        ch = _make_channel()
+        ch = _make_channel(brpop_timeout=0.05)
         ch._consumers["tag1"] = ("q1", MagicMock(), True)
         ch._delivered = {}
 

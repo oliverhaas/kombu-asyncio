@@ -98,22 +98,23 @@ DEFAULT_MESSAGE_TTL = -1
 MIN_QUEUE_EXPIRES = 10_000
 DEFAULT_MAX_RESTORE_COUNT: int | None = None
 
-# Server-side block duration for BZMPOP/XREAD inside a single consumer
-# iteration. Bounds graceful-close latency and the maximum delay before a
-# newly registered consumer's queue starts being polled.
-BROKER_BLOCK_TIMEOUT = 1.0
+# Default server-side block duration for BZMPOP/XREAD inside a single consumer
+# iteration. Same shape as classic kombu's `brpop_timeout` transport option.
+# Overridable via the `brpop_timeout` transport option.
+DEFAULT_BRPOP_TIMEOUT = 10.0
 
-# asyncio.wait safety net for the consumer iteration. We trust Redis to honour
-# BZMPOP/XREAD BLOCK reliably, so this is only ever supposed to fire if the
-# client connection or server has truly hung. Set far above BROKER_BLOCK_TIMEOUT
-# so it does not race normal completions.
-CONSUMER_WAIT_SAFETY_TIMEOUT = 30.0
+# Additional headroom layered on top of the configured `brpop_timeout` for the
+# asyncio.wait safety net. We trust Redis to honour BLOCK and return within
+# brpop_timeout; the safety net only fires if the client connection or server
+# has hung beyond brpop_timeout + this headroom.
+CONSUMER_WAIT_HEADROOM = 30.0
 
-# Maximum time close() will wait for in-flight iterations to drain naturally
-# before cancelling them as a last resort. Cancellation during close may
-# strand a message, but visibility-timeout restore recovers them on next
-# worker startup.
-CLOSE_DRAIN_TIMEOUT = BROKER_BLOCK_TIMEOUT * 3
+# Additional headroom layered on top of `brpop_timeout` for close()'s graceful
+# drain. The iteration should complete within brpop_timeout; we give it a small
+# extra window before cancelling as a last resort. Cancellation during close
+# may strand a message, but visibility-timeout restore recovers them on the
+# next worker startup.
+CLOSE_DRAIN_HEADROOM = 2.0
 
 DEFAULT_EXCHANGE = ""
 DEFAULT_FANOUT_PREFIX = "/{db}."
@@ -252,11 +253,15 @@ class Channel:
         # FAST/SLOW consume mode
         self._consume_fast_mode: bool = True
 
+        # Server-side block duration for BZMPOP/XREAD inside a single consumer
+        # iteration. Matches classic kombu's `brpop_timeout` option.
+        self._brpop_timeout: float = opts.get("brpop_timeout", DEFAULT_BRPOP_TIMEOUT)
+
         # Long-lived consumer iteration tasks; created lazily by drain_events.
         # Each task runs a single FAST→SLOW (or XREAD) cycle bounded by
-        # BROKER_BLOCK_TIMEOUT, then exits. drain_events restarts them.
-        # They are never cancelled in the hot path; close() sets _closing and
-        # awaits them to drain naturally.
+        # `_brpop_timeout`, then exits. drain_events restarts them. They are
+        # never cancelled in the hot path; close() sets _closing and awaits
+        # them to drain naturally.
         self._consume_iter_task: asyncio.Task | None = None
         self._xread_iter_task: asyncio.Task | None = None
         self._closing: bool = False
@@ -706,12 +711,10 @@ class Channel:
         consumers.
 
         Consumer iterations are long-lived and bounded by Redis-side
-        BROKER_BLOCK_TIMEOUT — never cancelled mid-flight. They complete on
-        their own well before CONSUMER_WAIT_SAFETY_TIMEOUT, which is a generous
-        safety net that only fires if the client connection or server has hung.
-        The caller's `timeout` parameter only affects the timeout=0 non-blocking
-        fast path; in the blocking path, drain_events returns when the current
-        iteration completes (typically within BROKER_BLOCK_TIMEOUT seconds).
+        `brpop_timeout` — never cancelled mid-flight. They complete on their
+        own; the asyncio.wait safety net at `brpop_timeout + CONSUMER_WAIT_HEADROOM`
+        only fires if the client connection or server has hung. The caller's
+        `timeout` parameter only affects the timeout=0 non-blocking fast path.
         """
         if self._closing or not self._consumers:
             await asyncio.sleep(0.1)
@@ -736,10 +739,11 @@ class Channel:
             await asyncio.sleep(0.1)
             return False
 
+        safety_timeout = self._brpop_timeout + CONSUMER_WAIT_HEADROOM
         done, _pending = await asyncio.wait(
             tasks,
             return_when=asyncio.FIRST_COMPLETED,
-            timeout=CONSUMER_WAIT_SAFETY_TIMEOUT,
+            timeout=safety_timeout,
         )
 
         if not done:
@@ -749,9 +753,12 @@ class Channel:
             # delivered. The iteration is left pending; if Redis recovers it
             # completes naturally and the next drain_events call picks it up.
             logger.warning(
-                "consumer iteration did not return within %.1fs — Redis "
-                "BLOCK reply may be stalled; leaving iteration pending",
-                CONSUMER_WAIT_SAFETY_TIMEOUT,
+                "consumer iteration did not return within %.1fs (brpop_timeout=%.1fs "
+                "+ headroom=%.1fs) — Redis BLOCK reply may be stalled; leaving "
+                "iteration pending",
+                safety_timeout,
+                self._brpop_timeout,
+                CONSUMER_WAIT_HEADROOM,
             )
             return False
 
@@ -796,19 +803,19 @@ class Channel:
 
     async def _safe_consume_iter(self, queues: list[str]) -> bool:
         try:
-            return await self._consume_regular(queues, BROKER_BLOCK_TIMEOUT)
+            return await self._consume_regular(queues, self._brpop_timeout)
         except Exception as exc:
             logger.debug("consume iteration error: %s", exc)
             # Back off so drain_events doesn't tight-loop on a persistent fault.
-            await asyncio.sleep(min(BROKER_BLOCK_TIMEOUT, 0.1))
+            await asyncio.sleep(min(self._brpop_timeout, 0.1))
             return False
 
     async def _safe_xread_iter(self) -> bool:
         try:
-            return await self._xread_wait(BROKER_BLOCK_TIMEOUT)
+            return await self._xread_wait(self._brpop_timeout)
         except Exception as exc:
             logger.debug("xread iteration error: %s", exc)
-            await asyncio.sleep(min(BROKER_BLOCK_TIMEOUT, 0.1))
+            await asyncio.sleep(min(self._brpop_timeout, 0.1))
             return False
 
     async def _consume_regular(self, queues: list[str], timeout: float) -> bool:
@@ -1360,30 +1367,34 @@ class Channel:
         self._closing = True
 
         # Let consumer iterations finish naturally — bounded by
-        # BROKER_BLOCK_TIMEOUT. They are never cancelled in the hot path, so
-        # any in-flight FAST script / BZMPOP finalisation runs to completion
-        # and the message is delivered rather than stranded in messages_index.
+        # `brpop_timeout`. They are never cancelled in the hot path, so any
+        # in-flight FAST script / BZMPOP finalisation runs to completion and
+        # the message is delivered rather than stranded in messages_index.
         # If an iteration is hung (Redis unresponsive), we cancel it after
-        # CLOSE_DRAIN_TIMEOUT as a last resort: stranding at shutdown is
-        # acceptable since visibility-timeout restore recovers those messages
-        # on the next worker startup.
+        # `brpop_timeout + CLOSE_DRAIN_HEADROOM` as a last resort: stranding
+        # at shutdown is acceptable since visibility-timeout restore recovers
+        # those messages on the next worker startup.
         consumer_tasks = [
             t
             for t in (self._consume_iter_task, self._xread_iter_task)
             if t is not None and not t.done()
         ]
         if consumer_tasks:
+            drain_timeout = self._brpop_timeout + CLOSE_DRAIN_HEADROOM
             try:
                 await asyncio.wait_for(
                     asyncio.gather(*consumer_tasks, return_exceptions=True),
-                    timeout=CLOSE_DRAIN_TIMEOUT,
+                    timeout=drain_timeout,
                 )
             except (TimeoutError, asyncio.TimeoutError):
                 logger.warning(
-                    "consumer iterations did not drain within %.1fs at close; "
-                    "cancelling — in-flight messages may be stranded until "
-                    "visibility-timeout restore",
-                    CLOSE_DRAIN_TIMEOUT,
+                    "consumer iterations did not drain within %.1fs at close "
+                    "(brpop_timeout=%.1fs + headroom=%.1fs); cancelling — "
+                    "in-flight messages may be stranded until visibility-"
+                    "timeout restore",
+                    drain_timeout,
+                    self._brpop_timeout,
+                    CLOSE_DRAIN_HEADROOM,
                 )
                 for task in consumer_tasks:
                     if not task.done():
