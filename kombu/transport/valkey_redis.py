@@ -738,11 +738,7 @@ class Channel:
             return False
 
         self._ensure_consumer_tasks()
-        tasks = [
-            t
-            for t in (self._consume_iter_task, self._xread_iter_task)
-            if t is not None
-        ]
+        tasks = [t for t in (self._consume_iter_task, self._xread_iter_task) if t is not None]
         if not tasks:
             await asyncio.sleep(0.1)
             return False
@@ -781,11 +777,7 @@ class Channel:
 
     def _regular_queues(self) -> list[str]:
         return list(
-            dict.fromkeys(
-                q
-                for q, _cb, _no_ack in self._consumers.values()
-                if q not in self.active_fanout_queues
-            ),
+            dict.fromkeys(q for q, _cb, _no_ack in self._consumers.values() if q not in self.active_fanout_queues),
         )
 
     def _ensure_consumer_tasks(self) -> None:
@@ -793,17 +785,13 @@ class Channel:
             return
         loop = asyncio.get_running_loop()
         regular_queues = self._regular_queues()
-        if regular_queues and (
-            self._consume_iter_task is None or self._consume_iter_task.done()
-        ):
+        if regular_queues and (self._consume_iter_task is None or self._consume_iter_task.done()):
             self._consume_iter_task = asyncio.create_task(
                 self._safe_consume_iter(regular_queues),
             )
             self._consume_iter_started_at = loop.time()
             self._consume_iter_stall_warned = False
-        if self.active_fanout_queues and (
-            self._xread_iter_task is None or self._xread_iter_task.done()
-        ):
+        if self.active_fanout_queues and (self._xread_iter_task is None or self._xread_iter_task.done()):
             self._xread_iter_task = asyncio.create_task(
                 self._safe_xread_iter(),
             )
@@ -1407,11 +1395,7 @@ class Channel:
         # `block_timeout + CLOSE_DRAIN_HEADROOM` as a last resort: stranding
         # at shutdown is acceptable since visibility-timeout restore recovers
         # those messages on the next worker startup.
-        consumer_tasks = [
-            t
-            for t in (self._consume_iter_task, self._xread_iter_task)
-            if t is not None and not t.done()
-        ]
+        consumer_tasks = [t for t in (self._consume_iter_task, self._xread_iter_task) if t is not None and not t.done()]
         if consumer_tasks:
             drain_timeout = self._block_timeout + CLOSE_DRAIN_HEADROOM
             try:
@@ -1419,7 +1403,7 @@ class Channel:
                     asyncio.gather(*consumer_tasks, return_exceptions=True),
                     timeout=drain_timeout,
                 )
-            except (TimeoutError, asyncio.TimeoutError):
+            except TimeoutError:
                 logger.warning(
                     "consumer iterations did not drain within %.1fs at close "
                     "(block_timeout=%.1fs + headroom=%.1fs); cancelling — "

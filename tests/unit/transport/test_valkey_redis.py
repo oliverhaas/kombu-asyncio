@@ -1593,10 +1593,7 @@ class TestPersistentConsumerTasks:
         with caplog.at_level("WARNING", logger="kombu.transport.valkey_redis"):
             await ch.drain_events(timeout=1.0)
 
-        assert any(
-            "xread_wait" in rec.message and "stalled" in rec.message.lower()
-            for rec in caplog.records
-        )
+        assert any("xread_wait" in rec.message and "stalled" in rec.message.lower() for rec in caplog.records)
         # Warn-once: a third call must not log a second xread warning.
         caplog.clear()
         with caplog.at_level("WARNING", logger="kombu.transport.valkey_redis"):
