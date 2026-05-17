@@ -1433,8 +1433,100 @@ class TestDrainEventsFull:
 
 
 # ---------------------------------------------------------------------------
-# Periodic tasks lifecycle
+# Persistent consumer task lifecycle
 # ---------------------------------------------------------------------------
+
+
+class TestPersistentConsumerTasks:
+    async def test_drain_timeout_does_not_cancel_pending_iteration(self):
+        # Once an iteration is in flight (mid-BZMPOP or mid-script reply) it
+        # must NOT be cancelled when drain_events times out. Otherwise the
+        # broker-side state can race ahead of Python-side delivery and the
+        # message strands in messages_index for ~6 min.
+        ch = _make_channel()
+        ch._consumers["tag1"] = ("q1", MagicMock(), True)
+
+        iteration_completed = asyncio.Event()
+
+        async def long_iteration(*args, **kwargs):
+            try:
+                await asyncio.sleep(0.2)
+                return False
+            finally:
+                iteration_completed.set()
+
+        ch._consume_regular = long_iteration
+
+        # drain_events times out before the iteration finishes.
+        result = await ch.drain_events(timeout=0.05)
+        assert result is False
+        assert ch._consume_iter_task is not None
+        assert not ch._consume_iter_task.done()
+        assert not ch._consume_iter_task.cancelled()
+
+        # Let the iteration complete naturally.
+        await iteration_completed.wait()
+
+    async def test_inflight_iteration_persists_across_drain_calls(self):
+        # The persistent iteration task started by one drain_events call must
+        # be picked up by the next call instead of being recreated. Verifies
+        # that a message delivered by the long-running iteration eventually
+        # makes it back to the caller.
+        ch = _make_channel()
+        ch._consumers["tag1"] = ("q1", MagicMock(), True)
+
+        invocations = 0
+
+        async def slow_then_deliver(*args, **kwargs):
+            nonlocal invocations
+            invocations += 1
+            await asyncio.sleep(0.1)
+            return True  # delivered
+
+        ch._consume_regular = slow_then_deliver
+
+        # First call times out before the iteration finishes.
+        result = await ch.drain_events(timeout=0.02)
+        assert result is False
+        assert invocations == 1
+        assert ch._consume_iter_task is not None
+
+        first_task = ch._consume_iter_task
+
+        # Second call waits long enough to harvest the existing iteration.
+        result = await ch.drain_events(timeout=0.5)
+        assert result is True
+        # The same iteration delivered the message — _consume_regular was not
+        # invoked a second time.
+        assert invocations == 1
+        assert first_task.done()
+
+    async def test_close_awaits_inflight_iteration(self):
+        # close() must let the in-flight iteration finish so a message that
+        # was already popped server-side is delivered, not stranded.
+        ch = _make_channel()
+        ch._consumers["tag1"] = ("q1", MagicMock(), True)
+        ch._delivered = {}
+
+        delivered = asyncio.Event()
+
+        async def deliver_then_finish(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            delivered.set()
+            return True
+
+        ch._consume_regular = deliver_then_finish
+
+        # Start an iteration via drain_events and time out before it finishes.
+        await ch.drain_events(timeout=0.01)
+        assert ch._consume_iter_task is not None
+        assert not ch._consume_iter_task.done()
+
+        # close() must wait for the iteration to complete.
+        await ch.close()
+        assert delivered.is_set()
+        assert ch._consume_iter_task is None
+        assert ch._closing is True
 
 
 class TestPeriodicTasks:
