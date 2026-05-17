@@ -262,8 +262,16 @@ class Channel:
         # `_brpop_timeout`, then exits. drain_events restarts them. They are
         # never cancelled in the hot path; close() sets _closing and awaits
         # them to drain naturally.
+        # `_started_at` and `_stall_warned` provide per-task stall detection:
+        # when one iteration hangs while the other keeps delivering, the
+        # hung-task warning still fires (asyncio.wait's FIRST_COMPLETED
+        # would otherwise mask it).
         self._consume_iter_task: asyncio.Task | None = None
+        self._consume_iter_started_at: float = 0.0
+        self._consume_iter_stall_warned: bool = False
         self._xread_iter_task: asyncio.Task | None = None
+        self._xread_iter_started_at: float = 0.0
+        self._xread_iter_stall_warned: bool = False
         self._closing: bool = False
 
         # Periodic task handles
@@ -746,20 +754,16 @@ class Channel:
             timeout=safety_timeout,
         )
 
+        # Per-task stall warning. asyncio.wait with FIRST_COMPLETED returns
+        # as soon as ANY task completes, so a single hung iteration alongside
+        # a healthy one would otherwise be silent. We deliberately don't
+        # cancel: a cancel mid-FAST-script or post-BZMPOP would strand the
+        # message that's about to be delivered. The iteration is left pending;
+        # if Redis recovers it completes naturally and the next drain_events
+        # call picks it up.
+        self._warn_stalled_iterations()
+
         if not done:
-            # Safety net fired — Redis didn't honour BLOCK or the client is
-            # hung. We deliberately don't cancel: a cancel mid-FAST-script
-            # or mid-post-BZMPOP would strand any message that's about to be
-            # delivered. The iteration is left pending; if Redis recovers it
-            # completes naturally and the next drain_events call picks it up.
-            logger.warning(
-                "consumer iteration did not return within %.1fs (brpop_timeout=%.1fs "
-                "+ headroom=%.1fs) — Redis BLOCK reply may be stalled; leaving "
-                "iteration pending",
-                safety_timeout,
-                self._brpop_timeout,
-                CONSUMER_WAIT_HEADROOM,
-            )
             return False
 
         delivered = False
@@ -787,6 +791,7 @@ class Channel:
     def _ensure_consumer_tasks(self) -> None:
         if self._closing:
             return
+        loop = asyncio.get_running_loop()
         regular_queues = self._regular_queues()
         if regular_queues and (
             self._consume_iter_task is None or self._consume_iter_task.done()
@@ -794,12 +799,40 @@ class Channel:
             self._consume_iter_task = asyncio.create_task(
                 self._safe_consume_iter(regular_queues),
             )
+            self._consume_iter_started_at = loop.time()
+            self._consume_iter_stall_warned = False
         if self.active_fanout_queues and (
             self._xread_iter_task is None or self._xread_iter_task.done()
         ):
             self._xread_iter_task = asyncio.create_task(
                 self._safe_xread_iter(),
             )
+            self._xread_iter_started_at = loop.time()
+            self._xread_iter_stall_warned = False
+
+    def _warn_stalled_iterations(self) -> None:
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        threshold = self._brpop_timeout + CONSUMER_WAIT_HEADROOM
+        for kind, task_attr, started_attr, warned_attr in (
+            ("consume_regular", "_consume_iter_task", "_consume_iter_started_at", "_consume_iter_stall_warned"),
+            ("xread_wait", "_xread_iter_task", "_xread_iter_started_at", "_xread_iter_stall_warned"),
+        ):
+            task = getattr(self, task_attr)
+            if (
+                task is not None
+                and not task.done()
+                and not getattr(self, warned_attr)
+                and now - getattr(self, started_attr) > threshold
+            ):
+                logger.warning(
+                    "%s iteration has been pending for %.1fs (> %.1fs); Redis "
+                    "BLOCK reply may be stalled. Iteration left running.",
+                    kind,
+                    now - getattr(self, started_attr),
+                    threshold,
+                )
+                setattr(self, warned_attr, True)
 
     async def _safe_consume_iter(self, queues: list[str]) -> bool:
         try:

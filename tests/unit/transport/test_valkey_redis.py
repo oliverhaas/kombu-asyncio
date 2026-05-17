@@ -1555,6 +1555,54 @@ class TestPersistentConsumerTasks:
         assert ch._consume_iter_task is None
         assert ch._closing is True
 
+    async def test_warns_when_only_one_iteration_stalls(self, monkeypatch, caplog):
+        # If asyncio.wait's FIRST_COMPLETED fires on a healthy iteration while
+        # the sibling is hung, the hung-task warning must still fire.
+        from kombu.transport import valkey_redis
+
+        monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_HEADROOM", 0.0)
+
+        ch = _make_channel(brpop_timeout=0.05)
+        ch._consumers["tag1"] = ("q1", MagicMock(), True)
+        ch._exchanges["fan"] = {"type": "fanout"}
+        ch._fanout_queues["fq1"] = ("fan", "*")
+        ch.active_fanout_queues.add("fq1")
+        ch._consumers["tag2"] = ("fq1", MagicMock(), True)
+
+        # Regular delivers fast on every call; xread is hung.
+        async def fast_deliver(*args, **kwargs):
+            await asyncio.sleep(0.005)
+            return True
+
+        async def hung(*args, **kwargs):
+            await asyncio.sleep(10)
+            return False
+
+        ch._consume_regular = fast_deliver
+        ch._xread_wait = hung
+
+        # First drain bootstraps both tasks. Regular delivers immediately,
+        # xread is left pending with a fresh started_at.
+        await ch.drain_events(timeout=1.0)
+        assert ch._xread_iter_task is not None
+        assert not ch._xread_iter_task.done()
+
+        # Wait so xread's age exceeds (brpop_timeout + headroom).
+        await asyncio.sleep(0.1)
+
+        with caplog.at_level("WARNING", logger="kombu.transport.valkey_redis"):
+            await ch.drain_events(timeout=1.0)
+
+        assert any(
+            "xread_wait" in rec.message and "stalled" in rec.message.lower()
+            for rec in caplog.records
+        )
+        # Warn-once: a third call must not log a second xread warning.
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="kombu.transport.valkey_redis"):
+            await ch.drain_events(timeout=1.0)
+        assert not any("xread_wait" in rec.message for rec in caplog.records)
+
     async def test_close_cancels_hung_iteration_with_warning(self, monkeypatch, caplog):
         # If the iteration hangs past brpop_timeout + CLOSE_DRAIN_HEADROOM,
         # close cancels it as a last resort and logs a warning. Stranding at
