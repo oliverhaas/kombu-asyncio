@@ -1470,7 +1470,7 @@ class TestPersistentConsumerTasks:
 
         monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_HEADROOM", 0.0)
 
-        ch = _make_channel(brpop_timeout=0.05)
+        ch = _make_channel(block_timeout=0.05)
         ch._consumers["tag1"] = ("q1", MagicMock(), True)
 
         cancelled = False
@@ -1504,7 +1504,7 @@ class TestPersistentConsumerTasks:
 
         monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_HEADROOM", 0.0)
 
-        ch = _make_channel(brpop_timeout=0.05)
+        ch = _make_channel(block_timeout=0.05)
         ch._consumers["tag1"] = ("q1", MagicMock(), True)
 
         invocations = 0
@@ -1562,7 +1562,7 @@ class TestPersistentConsumerTasks:
 
         monkeypatch.setattr(valkey_redis, "CONSUMER_WAIT_HEADROOM", 0.0)
 
-        ch = _make_channel(brpop_timeout=0.05)
+        ch = _make_channel(block_timeout=0.05)
         ch._consumers["tag1"] = ("q1", MagicMock(), True)
         ch._exchanges["fan"] = {"type": "fanout"}
         ch._fanout_queues["fq1"] = ("fan", "*")
@@ -1587,7 +1587,7 @@ class TestPersistentConsumerTasks:
         assert ch._xread_iter_task is not None
         assert not ch._xread_iter_task.done()
 
-        # Wait so xread's age exceeds (brpop_timeout + headroom).
+        # Wait so xread's age exceeds (block_timeout + headroom).
         await asyncio.sleep(0.1)
 
         with caplog.at_level("WARNING", logger="kombu.transport.valkey_redis"):
@@ -1604,7 +1604,7 @@ class TestPersistentConsumerTasks:
         assert not any("xread_wait" in rec.message for rec in caplog.records)
 
     async def test_close_cancels_hung_iteration_with_warning(self, monkeypatch, caplog):
-        # If the iteration hangs past brpop_timeout + CLOSE_DRAIN_HEADROOM,
+        # If the iteration hangs past block_timeout + CLOSE_DRAIN_HEADROOM,
         # close cancels it as a last resort and logs a warning. Stranding at
         # shutdown is acceptable since visibility-timeout restore recovers
         # those on next worker boot.
@@ -1612,7 +1612,7 @@ class TestPersistentConsumerTasks:
 
         monkeypatch.setattr(valkey_redis, "CLOSE_DRAIN_HEADROOM", 0.0)
 
-        ch = _make_channel(brpop_timeout=0.05)
+        ch = _make_channel(block_timeout=0.05)
         ch._consumers["tag1"] = ("q1", MagicMock(), True)
         ch._delivered = {}
 
