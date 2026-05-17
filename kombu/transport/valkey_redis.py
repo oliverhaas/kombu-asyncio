@@ -746,7 +746,11 @@ class Channel:
         to avoid BZMPOP blocking.
         """
         if self._consume_fast_mode or timeout == 0:
-            result = await self._fast_consume(queues)
+            # Shield: once the Lua script is dispatched it atomically pops the
+            # message and bumps messages_index server-side. If cancelled
+            # mid-flight the payload would be lost and the message stranded
+            # until visibility-timeout restore (~6 min).
+            result = await asyncio.shield(self._fast_consume(queues))
             if result:
                 return True
             if timeout == 0:
@@ -755,7 +759,8 @@ class Channel:
             # FAST returned nil — all queues empty, switch to SLOW
             self._consume_fast_mode = False
 
-        # SLOW mode: blocking BZMPOP
+        # SLOW mode: blocking BZMPOP. _slow_consume shields its own
+        # post-BZMPOP finalisation; BZMPOP itself stays cancellable.
         delivered = await self._slow_consume(queues, timeout)
         if delivered:
             self._consume_fast_mode = True  # Switch back to FAST
@@ -815,6 +820,11 @@ class Channel:
         if not result:
             return False
 
+        # BZMPOP has popped the delivery tag from the queue ZSET. From here on
+        # the consume must run to completion or the message is stranded.
+        return await asyncio.shield(self._slow_consume_finalize(result))
+
+    async def _slow_consume_finalize(self, result) -> bool:
         queue_key_raw, members = result
         queue_key = queue_key_raw.decode() if isinstance(queue_key_raw, bytes) else queue_key_raw
         queue_key = self._unprefixed(queue_key)

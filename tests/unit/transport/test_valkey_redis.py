@@ -531,6 +531,95 @@ class TestFastSlowConsume:
         msg = call_args[0][1]
         assert msg.headers.get("x-restore-count") == 3
 
+    async def test_consume_regular_delivers_when_cancelled_during_fast_script(self):
+        # The FAST Lua script atomically pops from the queue ZSET and bumps the
+        # messages_index score server-side. If drain_events cancels the consume
+        # task while the reply is in flight, the payload is discarded and the
+        # message strands in messages_index until visibility-timeout restore
+        # fires ~6 min later. Verify the message is still delivered.
+        ch = _make_channel()
+        ch._consume_fast_mode = True
+
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q1", cb, True)
+
+        script_called = asyncio.Event()
+
+        async def _script(*args, **kwargs):
+            script_called.set()
+            # Yield so the outer task can be cancelled while we're awaiting.
+            await asyncio.sleep(0.01)
+            return [
+                b"q1",
+                b"dt1",
+                b'{"body": "hi", "properties": {}, "headers": {}}',
+                b"0",
+            ]
+
+        ch._consume_script = _script
+
+        task = asyncio.create_task(ch._consume_regular(["q1"], timeout=1.0))
+        await script_called.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        # Wait for the shielded inner FAST consume to finish delivery.
+        for _ in range(200):
+            if cb.called:
+                break
+            await asyncio.sleep(0.005)
+        assert cb.called, "message stranded: not delivered after cancellation"
+
+    async def test_consume_regular_delivers_when_cancelled_after_bzmpop(self):
+        # In SLOW mode, BZMPOP pops the delivery tag from the queue ZSET before
+        # the pipeline refreshes the index and fetches the payload. Cancellation
+        # in that window strands the message — the finalize step must complete.
+        ch = _make_channel()
+        ch._consume_fast_mode = False
+
+        cb = MagicMock()
+        ch._consumers["tag1"] = ("q1", cb, True)
+
+        ch.client.bzmpop = AsyncMock(return_value=(b"queue:q1", [(b"dt1", 1000.0)]))
+
+        execute_called = asyncio.Event()
+
+        async def _execute():
+            execute_called.set()
+            await asyncio.sleep(0.01)
+            return [None, [b'{"body": "hi", "properties": {}, "headers": {}}', b"0"]]
+
+        mock_pipe = AsyncMock()
+        mock_pipe.zadd = AsyncMock()
+        mock_pipe.hmget = AsyncMock()
+        mock_pipe.execute = _execute
+
+        class PipeCtx:
+            async def __aenter__(self):
+                return mock_pipe
+
+            async def __aexit__(self, *a):
+                pass
+
+        ch.client.pipeline = MagicMock(return_value=PipeCtx())
+
+        task = asyncio.create_task(ch._consume_regular(["q1"], timeout=1.0))
+        await execute_called.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        for _ in range(200):
+            if cb.called:
+                break
+            await asyncio.sleep(0.005)
+        assert cb.called, "message stranded: not delivered after cancellation"
+
 
 # ---------------------------------------------------------------------------
 # Ack / Reject / Recover
